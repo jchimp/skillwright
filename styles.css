@@ -122,9 +122,29 @@
 
 .skillwright-result .skillwright-actions {
   display: flex;
+  align-items: center;
   gap: 8px;
   margin-top: 14px;
   justify-content: flex-end;
+}
+
+/* auto margin claims the slack in the row, holding the field at the left edge
+   while the action buttons stay grouped on the right. */
+.skillwright-result .skillwright-temp {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: auto;
+}
+
+.skillwright-result .skillwright-temp label {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+
+.skillwright-result .skillwright-temp input {
+  width: 5em;
+  text-align: left;
 }
 
 .skillwright-result .skillwright-toolbar {

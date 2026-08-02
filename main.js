@@ -3877,8 +3877,15 @@ var RewriteModal = class extends import_obsidian4.Modal {
     new import_obsidian4.Setting(contentEl).setName("Skill").setDesc("Optional. Loaded from your skills folder.").addExtraButton((b) => {
       this.infoButton = b;
       b.setIcon("info").setTooltip("Show skill description").setDisabled(true).onClick(() => {
-        if (this.selectedSkill)
-          new SkillInfoModal(this.app, this.selectedSkill).open();
+        const skill = this.selectedSkill;
+        if (!skill)
+          return;
+        new InfoModal(this.app, {
+          heading: skill.name,
+          body: skill.description || "No description in this skill's frontmatter.",
+          muted: !skill.description,
+          footnote: skill.filePath
+        }).open();
       });
     }).addDropdown((dd) => {
       this.skillDropdown = dd;
@@ -4059,28 +4066,50 @@ var RewriteModal = class extends import_obsidian4.Modal {
     this.contentEl.empty();
   }
 };
-var SkillInfoModal = class extends import_obsidian4.Modal {
-  constructor(app, skill) {
+var InfoModal = class extends import_obsidian4.Modal {
+  constructor(app, opts) {
     super(app);
-    this.skill = skill;
+    this.opts = opts;
   }
   onOpen() {
     const { contentEl } = this;
     contentEl.addClass("skillwright-modal", "skillwright-info");
-    contentEl.createEl("h3", { text: this.skill.name });
+    contentEl.createEl("h3", { text: this.opts.heading });
     contentEl.createEl("div", {
-      text: this.skill.description || "No description in this skill's frontmatter.",
-      cls: this.skill.description ? "skillwright-info-desc" : "skillwright-info-desc is-empty"
+      text: this.opts.body,
+      cls: this.opts.muted ? "skillwright-info-desc is-empty" : "skillwright-info-desc"
     });
-    contentEl.createEl("div", { text: this.skill.filePath, cls: "skillwright-info-path" });
+    if (this.opts.footnote) {
+      contentEl.createEl("div", { text: this.opts.footnote, cls: "skillwright-info-path" });
+    }
   }
   onClose() {
     this.contentEl.empty();
   }
 };
+var TEMP_TOOLTIP = "Lower is steadier, higher is more varied. Click for detail.";
+var TEMP_EXPLAINER = [
+  "Temperature controls how much the model varies its wording from one run to the next.",
+  "",
+  "0.0 \u2013 0.3   Near-deterministic. Re-runs come back nearly identical. Best when you want a skill's voice followed closely, or when comparing two prompts fairly.",
+  "",
+  "0.7   The default. Attempts differ noticeably in phrasing while still following the instruction.",
+  "",
+  "1.0 \u2013 2.0   Progressively looser and more inventive, and progressively more likely to drift off the instruction or out of the skill's voice.",
+  "",
+  "The same prompt at the same temperature still varies \u2014 only 0 is close to repeatable. To compare, re-run a few times and step through the attempts with \u2039 \u203A."
+].join("\n");
 function fitToContent(ta) {
   ta.style.height = "auto";
   ta.style.height = `${ta.scrollHeight}px`;
+}
+var TEMP_MIN = 0;
+var TEMP_MAX = 2;
+function clampTemperature(raw, fallback) {
+  const n = Number.parseFloat(raw);
+  if (Number.isNaN(n))
+    return fallback;
+  return Math.min(TEMP_MAX, Math.max(TEMP_MIN, n));
 }
 var ResultModal = class extends import_obsidian4.Modal {
   constructor(app, opts) {
@@ -4134,6 +4163,22 @@ var ResultModal = class extends import_obsidian4.Modal {
     });
     this.paneEl = contentEl.createEl("div", { cls: "skillwright-pane" });
     const row = contentEl.createEl("div", { cls: "skillwright-actions" });
+    const temp = row.createEl("div", { cls: "skillwright-temp" });
+    const tempId = "skillwright-temp-input";
+    temp.createEl("label", { text: "Temp", attr: { for: tempId } });
+    this.tempInput = temp.createEl("input", {
+      attr: { id: tempId, type: "number", min: String(TEMP_MIN), max: String(TEMP_MAX), step: "0.1" }
+    });
+    this.tempInput.title = "Sampling temperature for the next Re-Run. Does not change the setting.";
+    this.tempInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        this.rerun();
+      }
+    });
+    new import_obsidian4.ExtraButtonComponent(temp).setIcon("info").setTooltip(TEMP_TOOLTIP).onClick(
+      () => new InfoModal(this.app, { heading: "Temperature", body: TEMP_EXPLAINER }).open()
+    );
     this.rerunButton = new import_obsidian4.ButtonComponent(row).setButtonText("Re-Run").onClick(() => this.rerun());
     this.replaceButton = new import_obsidian4.ButtonComponent(row).setButtonText("Replace").setCta().onClick(() => this.act("replace"));
     this.insertButton = new import_obsidian4.ButtonComponent(row).setButtonText("Insert below").onClick(() => this.act("insert"));
@@ -4153,6 +4198,12 @@ var ResultModal = class extends import_obsidian4.Modal {
       text: current.meta.skill ? `Skill: ${current.meta.skill}` : "Skill: none (instruction only)",
       cls: "skillwright-meta-item"
     });
+    this.metaEl.createEl("span", {
+      text: `Temp: ${current.meta.temperature}`,
+      cls: "skillwright-meta-item"
+    });
+    this.tempInput.value = String(current.meta.temperature);
+    this.tempInput.disabled = this.busy;
     this.diffToggleBtn.toggleClass("is-active", this.view === "diff");
     this.editToggleBtn.toggleClass("is-active", this.view === "edit");
     const multi = this.attempts.length > 1;
@@ -4189,12 +4240,17 @@ var ResultModal = class extends import_obsidian4.Modal {
   async rerun() {
     if (this.busy)
       return;
+    const temperature = clampTemperature(
+      this.tempInput.value,
+      this.attempts[this.index].meta.temperature
+    );
     this.busy = true;
+    this.tempInput.disabled = true;
     this.rerunButton.setDisabled(true);
     this.rerunButton.setButtonText("Re-running\u2026");
     this.setActionsEnabled(false);
     try {
-      const { text, meta } = await this.onRerun();
+      const { text, meta } = await this.onRerun(temperature);
       if (this.closed)
         return;
       this.attempts.push({ text, edited: text, meta });
@@ -4206,6 +4262,7 @@ var ResultModal = class extends import_obsidian4.Modal {
     } finally {
       if (!this.closed) {
         this.busy = false;
+        this.tempInput.disabled = false;
         this.rerunButton.setDisabled(false);
         this.rerunButton.setButtonText("Re-Run");
         this.setActionsEnabled(true);
@@ -4424,19 +4481,22 @@ var SkillwrightPlugin = class extends import_obsidian6.Plugin {
         ].filter(Boolean);
         new import_obsidian6.Notice(`Skillwright: ${warnings.join("; ")}.`, 8e3);
       }
-      const runOnce = async () => {
+      const runOnce = async (temperature) => {
         const text = (await chat(
           provider,
           { baseUrl: cfg.baseUrl, apiKey: cfg.apiKey ?? "", model: cfg.model },
-          { system, user, temperature: s.temperature, maxTokens: s.maxTokens }
+          { system, user, temperature, maxTokens: s.maxTokens }
         )).trim();
         if (!text)
           throw new Error("Empty response from model.");
-        return { text, meta: { provider, model: cfg.model, skill: choice.skill?.name ?? null } };
+        return {
+          text,
+          meta: { provider, model: cfg.model, skill: choice.skill?.name ?? null, temperature }
+        };
       };
       const notice = new import_obsidian6.Notice(`Skillwright: asking ${provider} (${cfg.model})\u2026`, 0);
       try {
-        const first = await runOnce();
+        const first = await runOnce(s.temperature);
         notice.hide();
         this.showResult(editor, selection, choice, first, runOnce);
       } catch (e) {

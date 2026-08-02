@@ -183,7 +183,14 @@ export class RewriteModal extends Modal {
           .setTooltip("Show skill description")
           .setDisabled(true)
           .onClick(() => {
-            if (this.selectedSkill) new SkillInfoModal(this.app, this.selectedSkill).open();
+            const skill = this.selectedSkill;
+            if (!skill) return;
+            new InfoModal(this.app, {
+              heading: skill.name,
+              body: skill.description || "No description in this skill's frontmatter.",
+              muted: !skill.description,
+              footnote: skill.filePath,
+            }).open();
           });
       })
       .addDropdown((dd) => {
@@ -389,30 +396,58 @@ export class RewriteModal extends Modal {
   }
 }
 
-/** Read-only detail view for one skill, opened from the info button. */
-export class SkillInfoModal extends Modal {
-  private skill: Skill;
+/** Options for {@link InfoModal}. */
+export interface InfoModalOptions {
+  heading: string;
+  /** Body text; newlines are preserved. */
+  body: string;
+  /** Renders the body muted and italic, for placeholder text. */
+  muted?: boolean;
+  /** Small monospace line under the body, e.g. a source path. */
+  footnote?: string;
+}
 
-  constructor(app: App, skill: Skill) {
+/** Small read-only explainer behind the (i) buttons. */
+export class InfoModal extends Modal {
+  private opts: InfoModalOptions;
+
+  constructor(app: App, opts: InfoModalOptions) {
     super(app);
-    this.skill = skill;
+    this.opts = opts;
   }
 
   onOpen(): void {
     const { contentEl } = this;
     contentEl.addClass("skillwright-modal", "skillwright-info");
-    contentEl.createEl("h3", { text: this.skill.name });
+    contentEl.createEl("h3", { text: this.opts.heading });
     contentEl.createEl("div", {
-      text: this.skill.description || "No description in this skill's frontmatter.",
-      cls: this.skill.description ? "skillwright-info-desc" : "skillwright-info-desc is-empty",
+      text: this.opts.body,
+      cls: this.opts.muted ? "skillwright-info-desc is-empty" : "skillwright-info-desc",
     });
-    contentEl.createEl("div", { text: this.skill.filePath, cls: "skillwright-info-path" });
+    if (this.opts.footnote) {
+      contentEl.createEl("div", { text: this.opts.footnote, cls: "skillwright-info-path" });
+    }
   }
 
   onClose(): void {
     this.contentEl.empty();
   }
 }
+
+const TEMP_TOOLTIP =
+  "Lower is steadier, higher is more varied. Click for detail.";
+
+const TEMP_EXPLAINER = [
+  "Temperature controls how much the model varies its wording from one run to the next.",
+  "",
+  "0.0 – 0.3   Near-deterministic. Re-runs come back nearly identical. Best when you want a skill's voice followed closely, or when comparing two prompts fairly.",
+  "",
+  "0.7   The default. Attempts differ noticeably in phrasing while still following the instruction.",
+  "",
+  "1.0 – 2.0   Progressively looser and more inventive, and progressively more likely to drift off the instruction or out of the skill's voice.",
+  "",
+  "The same prompt at the same temperature still varies — only 0 is close to repeatable. To compare, re-run a few times and step through the attempts with ‹ ›.",
+].join("\n");
 
 /**
  * Grows a textarea to fit its content. CSS caps it with max-height, so the
@@ -431,6 +466,25 @@ export interface ResultMeta {
   provider: ProviderId;
   model: string;
   skill: string | null;
+  /** Sampling temperature this attempt ran at; may differ per attempt. */
+  temperature: number;
+}
+
+/** Bounds matching the settings tab, so the two can't disagree. */
+const TEMP_MIN = 0;
+const TEMP_MAX = 2;
+
+/**
+ * Reads a temperature out of the input box.
+ *
+ * @param raw - the field's current text
+ * @param fallback - value to keep if the field is blank or unparseable
+ * @returns a temperature clamped to the accepted range
+ */
+function clampTemperature(raw: string, fallback: number): number {
+  const n = Number.parseFloat(raw);
+  if (Number.isNaN(n)) return fallback;
+  return Math.min(TEMP_MAX, Math.max(TEMP_MIN, n));
 }
 
 /** One rewrite attempt: the model's raw output plus the user's hand-edits to it. */
@@ -446,8 +500,11 @@ export interface ResultModalOptions {
   original: string;
   first: { text: string; meta: ResultMeta };
   onAction: (action: ResultAction, text: string) => void;
-  /** Re-issues the identical request. Rejects on provider error. */
-  onRerun: () => Promise<{ text: string; meta: ResultMeta }>;
+  /**
+   * Re-issues the same prompt at `temperature`. Rejects on provider error.
+   * The override applies to that request only; it never touches the setting.
+   */
+  onRerun: (temperature: number) => Promise<{ text: string; meta: ResultMeta }>;
 }
 
 /** Shows original vs. result (diff or editable text), with attempt history and Re-Run. */
@@ -455,7 +512,7 @@ export class ResultModal extends Modal {
   private title: string;
   private original: string;
   private onAction: (action: ResultAction, text: string) => void;
-  private onRerun: () => Promise<{ text: string; meta: ResultMeta }>;
+  private onRerun: (temperature: number) => Promise<{ text: string; meta: ResultMeta }>;
 
   private attempts: Attempt[];
   private index = 0;
@@ -471,6 +528,7 @@ export class ResultModal extends Modal {
   private navNextBtn!: HTMLButtonElement;
   private navLabelEl!: HTMLElement;
   private paneEl!: HTMLElement;
+  private tempInput!: HTMLInputElement;
   private rerunButton!: ButtonComponent;
   private replaceButton!: ButtonComponent;
   private insertButton!: ButtonComponent;
@@ -531,6 +589,31 @@ export class ResultModal extends Modal {
     this.paneEl = contentEl.createEl("div", { cls: "skillwright-pane" });
 
     const row = contentEl.createEl("div", { cls: "skillwright-actions" });
+
+    // Sits at the left end of the row (CSS pushes the buttons right) so it reads
+    // as an input to Re-Run rather than another action.
+    const temp = row.createEl("div", { cls: "skillwright-temp" });
+    const tempId = "skillwright-temp-input";
+    temp.createEl("label", { text: "Temp", attr: { for: tempId } });
+    this.tempInput = temp.createEl("input", {
+      attr: { id: tempId, type: "number", min: String(TEMP_MIN), max: String(TEMP_MAX), step: "0.1" },
+    });
+    this.tempInput.title = "Sampling temperature for the next Re-Run. Does not change the setting.";
+    // Enter in the field is the same intent as clicking Re-Run.
+    this.tempInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        this.rerun();
+      }
+    });
+
+    new ExtraButtonComponent(temp)
+      .setIcon("info")
+      .setTooltip(TEMP_TOOLTIP)
+      .onClick(() =>
+        new InfoModal(this.app, { heading: "Temperature", body: TEMP_EXPLAINER }).open()
+      );
+
     this.rerunButton = new ButtonComponent(row)
       .setButtonText("Re-Run")
       .onClick(() => this.rerun());
@@ -562,6 +645,15 @@ export class ResultModal extends Modal {
       text: current.meta.skill ? `Skill: ${current.meta.skill}` : "Skill: none (instruction only)",
       cls: "skillwright-meta-item",
     });
+    this.metaEl.createEl("span", {
+      text: `Temp: ${current.meta.temperature}`,
+      cls: "skillwright-meta-item",
+    });
+
+    // Refilled every repaint, so stepping through attempts shows the temperature
+    // each one actually ran at rather than a stale edit.
+    this.tempInput.value = String(current.meta.temperature);
+    this.tempInput.disabled = this.busy;
 
     this.diffToggleBtn.toggleClass("is-active", this.view === "diff");
     this.editToggleBtn.toggleClass("is-active", this.view === "edit");
@@ -605,12 +697,20 @@ export class ResultModal extends Modal {
 
   private async rerun(): Promise<void> {
     if (this.busy) return;
+    // Read before anything repaints, and fall back to the current attempt's value
+    // so a blank or junk field re-runs at what you can see rather than at 0.
+    const temperature = clampTemperature(
+      this.tempInput.value,
+      this.attempts[this.index].meta.temperature
+    );
+
     this.busy = true;
+    this.tempInput.disabled = true;
     this.rerunButton.setDisabled(true);
     this.rerunButton.setButtonText("Re-running…");
     this.setActionsEnabled(false);
     try {
-      const { text, meta } = await this.onRerun();
+      const { text, meta } = await this.onRerun(temperature);
       if (this.closed) return;
       this.attempts.push({ text, edited: text, meta });
       this.index = this.attempts.length - 1;
@@ -620,6 +720,7 @@ export class ResultModal extends Modal {
     } finally {
       if (!this.closed) {
         this.busy = false;
+        this.tempInput.disabled = false;
         this.rerunButton.setDisabled(false);
         this.rerunButton.setButtonText("Re-Run");
         this.setActionsEnabled(true);
