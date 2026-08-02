@@ -8,8 +8,13 @@ import {
   pluginCommands,
 } from "./obsidian-internal";
 
+/** Which UI the rewrite command opens to collect an instruction. */
+export type PromptUi = "inline" | "modal";
+
 export interface SkillwrightSettings {
   defaultProvider: ProviderId;
+  /** `inline` = compact bar pinned to the selection; `modal` = the full dialog */
+  promptUi: PromptUi;
   skillsFolder: string;
   /** Auto-detect `~/.claude/skills` and `~/.codex/skills` (desktop only) */
   includeAgentSkillFolders: boolean;
@@ -26,6 +31,7 @@ export interface SkillwrightSettings {
 
 export const DEFAULT_SETTINGS: SkillwrightSettings = {
   defaultProvider: "ollama",
+  promptUi: "inline",
   skillsFolder: "_skills",
   includeAgentSkillFolders: true,
   extraSkillFolders: "",
@@ -59,6 +65,22 @@ export class SkillwrightSettingTab extends PluginSettingTab {
         dd.setValue(s.defaultProvider);
         dd.onChange(async (v) => {
           s.defaultProvider = v as ProviderId;
+          await this.plugin.saveSettings();
+        });
+      });
+
+    new Setting(containerEl)
+      .setName("Prompt style")
+      .setDesc(
+        'How "Rewrite selection…" asks for an instruction. "Rewrite selection (all options)…" ' +
+          "always opens the dialog."
+      )
+      .addDropdown((dd) => {
+        dd.addOption("inline", "Inline bar (compact, at the selection)");
+        dd.addOption("modal", "Dialog (all options)");
+        dd.setValue(s.promptUi);
+        dd.onChange(async (v) => {
+          s.promptUi = v as PromptUi;
           await this.plugin.saveSettings();
         });
       });

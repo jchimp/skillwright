@@ -3,8 +3,15 @@ import { chat, ProviderId } from "./providers";
 import { importSkillsZip, loadSkills, resolveSkillRefs, Skill } from "./skills";
 import { skillSlug } from "./skillref";
 import { resolveStores } from "./store";
-import { ResultModal, RewriteModal, type ResultMeta } from "./modals";
-import { DEFAULT_SETTINGS, SkillwrightSettings, SkillwrightSettingTab } from "./settings";
+import { ResultModal, RewriteModal, type ResultMeta, type RewriteChoice } from "./modals";
+import { InlineRewriteBar } from "./inlinebar";
+import { selectionAnchor } from "./editor-geometry";
+import {
+  DEFAULT_SETTINGS,
+  PromptUi,
+  SkillwrightSettings,
+  SkillwrightSettingTab,
+} from "./settings";
 
 const SYSTEM_BASE = [
   "You are a precise text-editing assistant embedded in a markdown editor.",
@@ -25,6 +32,15 @@ export default class SkillwrightPlugin extends Plugin {
       id: "rewrite-selection",
       name: "Rewrite selection…",
       editorCallback: (editor) => this.startRewrite(editor),
+    });
+
+    // A second entry point so the full dialog stays reachable no matter what
+    // "Prompt style" is set to — the inline bar deliberately hides the skill
+    // picker and the per-run model override.
+    this.addCommand({
+      id: "rewrite-selection-options",
+      name: "Rewrite selection (all options)…",
+      editorCallback: (editor) => this.startRewrite(editor, "modal"),
     });
 
     this.addCommand({
@@ -103,7 +119,14 @@ export default class SkillwrightPlugin extends Plugin {
     return { skills, counts, shadowed };
   }
 
-  private async startRewrite(editor: Editor): Promise<void> {
+  /**
+   * Collects an instruction for the current selection, then runs the rewrite.
+   *
+   * @param editor - editor holding the selection
+   * @param force - overrides the "Prompt style" setting; used by the
+   *   all-options command so the dialog is always reachable
+   */
+  private async startRewrite(editor: Editor, force?: PromptUi): Promise<void> {
     const selection = editor.getSelection();
     if (!selection) {
       new Notice("Select some text first.");
@@ -112,70 +135,95 @@ export default class SkillwrightPlugin extends Plugin {
 
     const { skills } = await this.getSkills();
     const s = this.settings;
-    const defaults = {
-      provider: s.defaultProvider,
-      models: {
-        ollama: s.ollama.model,
-        openai: s.openai.model,
-        anthropic: s.anthropic.model,
+    const run = (choice: RewriteChoice) => this.runRewrite(editor, selection, choice);
+
+    // Falls back to the dialog when the selection can't be located on screen —
+    // a bar with nothing to anchor to is worse than the dialog it replaced.
+    const anchor = (force ?? s.promptUi) === "inline" ? selectionAnchor(editor) : null;
+    if (anchor) {
+      const provider = s.defaultProvider;
+      new InlineRewriteBar(editor, {
+        skills,
+        provider,
+        model: s[provider].model,
+        onSubmit: run,
+      }).open();
+      return;
+    }
+
+    new RewriteModal(
+      this.app,
+      skills,
+      {
+        provider: s.defaultProvider,
+        models: {
+          ollama: s.ollama.model,
+          openai: s.openai.model,
+          anthropic: s.anthropic.model,
+        },
       },
+      run
+    ).open();
+  }
+
+  /** Builds the prompts, calls the provider, and hands the result to the review dialog. */
+  private async runRewrite(
+    editor: Editor,
+    selection: string,
+    choice: RewriteChoice
+  ): Promise<void> {
+    const s = this.settings;
+    const provider = choice.provider;
+    const cfg = { ...s[provider] } as { baseUrl: string; apiKey?: string; model: string };
+    if (choice.model) cfg.model = choice.model;
+    if (!cfg.model) {
+      new Notice(`No model configured for ${provider}.`);
+      return;
+    }
+    if (provider !== "ollama" && !("apiKey" in cfg && cfg.apiKey)) {
+      new Notice(`No API key configured for ${provider}.`);
+      return;
+    }
+
+    const { system, skipped, missing } = await this.buildSystem(choice.skill);
+    const user = this.buildUser(selection, choice.instruction, choice.skill);
+
+    if (skipped.length || missing.length) {
+      const warnings = [
+        skipped.length ? `${skipped.length} reference(s) over budget (${skipped.join(", ")})` : "",
+        missing.length ? `${missing.length} not found (${missing.join(", ")})` : "",
+      ].filter(Boolean);
+      new Notice(`Skillwright: ${warnings.join("; ")}.`, 8000);
+    }
+
+    // Closes over the original system/user built above, so Re-Run always re-rewrites
+    // the original passage rather than the most recent attempt's output. Temperature
+    // is the one exception: the result modal passes it per request, and the stored
+    // setting is only ever read for the first run.
+    const runOnce = async (temperature: number): Promise<{ text: string; meta: ResultMeta }> => {
+      const text = (
+        await chat(
+          provider as ProviderId,
+          { baseUrl: cfg.baseUrl, apiKey: cfg.apiKey ?? "", model: cfg.model },
+          { system, user, temperature, maxTokens: s.maxTokens }
+        )
+      ).trim();
+      if (!text) throw new Error("Empty response from model.");
+      return {
+        text,
+        meta: { provider, model: cfg.model, skill: choice.skill?.name ?? null, temperature },
+      };
     };
 
-    new RewriteModal(this.app, skills, defaults, async (choice) => {
-      const provider = choice.provider;
-      const cfg = { ...s[provider] } as { baseUrl: string; apiKey?: string; model: string };
-      if (choice.model) cfg.model = choice.model;
-      if (!cfg.model) {
-        new Notice(`No model configured for ${provider}.`);
-        return;
-      }
-      if (provider !== "ollama" && !("apiKey" in cfg && cfg.apiKey)) {
-        new Notice(`No API key configured for ${provider}.`);
-        return;
-      }
-
-      const { system, skipped, missing } = await this.buildSystem(choice.skill);
-      const user = this.buildUser(selection, choice.instruction, choice.skill);
-
-      if (skipped.length || missing.length) {
-        const warnings = [
-          skipped.length
-            ? `${skipped.length} reference(s) over budget (${skipped.join(", ")})`
-            : "",
-          missing.length ? `${missing.length} not found (${missing.join(", ")})` : "",
-        ].filter(Boolean);
-        new Notice(`Skillwright: ${warnings.join("; ")}.`, 8000);
-      }
-
-      // Closes over the original system/user built above, so Re-Run always re-rewrites
-      // the original passage rather than the most recent attempt's output. Temperature
-      // is the one exception: the result modal passes it per request, and the stored
-      // setting is only ever read for the first run.
-      const runOnce = async (temperature: number): Promise<{ text: string; meta: ResultMeta }> => {
-        const text = (
-          await chat(
-            provider as ProviderId,
-            { baseUrl: cfg.baseUrl, apiKey: cfg.apiKey ?? "", model: cfg.model },
-            { system, user, temperature, maxTokens: s.maxTokens }
-          )
-        ).trim();
-        if (!text) throw new Error("Empty response from model.");
-        return {
-          text,
-          meta: { provider, model: cfg.model, skill: choice.skill?.name ?? null, temperature },
-        };
-      };
-
-      const notice = new Notice(`Skillwright: asking ${provider} (${cfg.model})…`, 0);
-      try {
-        const first = await runOnce(s.temperature);
-        notice.hide();
-        this.showResult(editor, selection, choice, first, runOnce);
-      } catch (e) {
-        notice.hide();
-        new Notice(`Skillwright error: ${(e as Error).message}`, 8000);
-      }
-    }).open();
+    const notice = new Notice(`Skillwright: asking ${provider} (${cfg.model})…`, 0);
+    try {
+      const first = await runOnce(s.temperature);
+      notice.hide();
+      this.showResult(editor, selection, choice, first, runOnce);
+    } catch (e) {
+      notice.hide();
+      new Notice(`Skillwright error: ${(e as Error).message}`, 8000);
+    }
   }
 
   private async buildSystem(
