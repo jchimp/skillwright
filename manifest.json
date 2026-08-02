@@ -1,10 +1,10 @@
 {
   "id": "skillwright",
   "name": "Skillwright",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "minAppVersion": "1.5.0",
   "description": "Rewrite selected text with LLMs (Ollama, OpenAI, Anthropic) using Claude Code-style skills (SKILL.md folders, zip-importable).",
-  "author": "jchimp",
+  "author": "Jeremy Champion",
   "authorUrl": "https://jchimp.tech",
   "isDesktopOnly": false
 }

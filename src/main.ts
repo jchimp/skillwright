@@ -72,7 +72,11 @@ export default class SkillwrightPlugin extends Plugin {
     const s = this.settings;
     const defaults = {
       provider: s.defaultProvider,
-      model: s[s.defaultProvider].model,
+      models: {
+        ollama: s.ollama.model,
+        openai: s.openai.model,
+        anthropic: s.anthropic.model,
+      },
     };
 
     new RewriteModal(this.app, skills, defaults, async (choice) => {
@@ -102,22 +106,27 @@ export default class SkillwrightPlugin extends Plugin {
       }
 
       // Closes over the original system/user built above, so Re-Run always re-rewrites
-      // the original passage rather than the most recent attempt's output.
-      const runOnce = async (): Promise<{ text: string; meta: ResultMeta }> => {
+      // the original passage rather than the most recent attempt's output. Temperature
+      // is the one exception: the result modal passes it per request, and the stored
+      // setting is only ever read for the first run.
+      const runOnce = async (temperature: number): Promise<{ text: string; meta: ResultMeta }> => {
         const text = (
           await chat(
             provider as ProviderId,
             { baseUrl: cfg.baseUrl, apiKey: cfg.apiKey ?? "", model: cfg.model },
-            { system, user, temperature: s.temperature, maxTokens: s.maxTokens }
+            { system, user, temperature, maxTokens: s.maxTokens }
           )
         ).trim();
         if (!text) throw new Error("Empty response from model.");
-        return { text, meta: { provider, model: cfg.model, skill: choice.skill?.name ?? null } };
+        return {
+          text,
+          meta: { provider, model: cfg.model, skill: choice.skill?.name ?? null, temperature },
+        };
       };
 
       const notice = new Notice(`Skillwright: asking ${provider} (${cfg.model})…`, 0);
       try {
-        const first = await runOnce();
+        const first = await runOnce(s.temperature);
         notice.hide();
         this.showResult(editor, selection, choice, first, runOnce);
       } catch (e) {
@@ -176,7 +185,7 @@ export default class SkillwrightPlugin extends Plugin {
     original: string,
     choice: { skill: Skill | null; instruction: string },
     first: { text: string; meta: ResultMeta },
-    onRerun: () => Promise<{ text: string; meta: ResultMeta }>
+    onRerun: (temperature: number) => Promise<{ text: string; meta: ResultMeta }>
   ): void {
     const title = choice.skill ? `Result — ${choice.skill.name}` : "Result";
     new ResultModal(this.app, {

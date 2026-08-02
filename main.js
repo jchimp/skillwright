@@ -3659,16 +3659,20 @@ function buildRows(original, revised) {
   flush(pendingRemoved, []);
   return rows;
 }
-function renderCellText(cell, text, counterpart, side) {
-  for (const part of diffWordsWithSpace(counterpart, text)) {
-    const isChange = side === "right" ? part.added : part.removed;
-    const isOther = side === "right" ? part.removed : part.added;
-    if (isOther)
-      continue;
-    cell.createEl("span", {
-      text: part.value,
-      cls: isChange ? side === "right" ? "skillwright-ins" : "skillwright-del" : void 0
-    });
+function renderChangedRow(left, right, oldText, newText) {
+  for (const part of diffWordsWithSpace(oldText, newText)) {
+    if (!part.added) {
+      left.createEl("span", {
+        text: part.value,
+        cls: part.removed ? "skillwright-del" : void 0
+      });
+    }
+    if (!part.removed) {
+      right.createEl("span", {
+        text: part.value,
+        cls: part.added ? "skillwright-ins" : void 0
+      });
+    }
   }
 }
 function renderSideBySideDiff(parent, original, revised) {
@@ -3706,8 +3710,7 @@ function renderSideBySideDiff(parent, original, revised) {
     if (row.right === null)
       right.addClass("is-filler");
     if (row.kind === "changed") {
-      renderCellText(left, row.left, row.right, "left");
-      renderCellText(right, row.right, row.left, "right");
+      renderChangedRow(left, right, row.left, row.right);
     } else {
       if (row.left !== null)
         left.setText(row.left);
@@ -3717,7 +3720,109 @@ function renderSideBySideDiff(parent, original, revised) {
   }
 }
 
+// src/skillref.ts
+var TOKEN_CHARS = /[A-Za-z0-9._-]/;
+var TOKEN_RE = /(^|\s)\/([A-Za-z0-9._-]+)/g;
+function skillSlug(name) {
+  return name.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9._-]/g, "");
+}
+function tokenAtCursor(text, cursor) {
+  let i = cursor;
+  while (i > 0 && TOKEN_CHARS.test(text[i - 1]))
+    i--;
+  if (i === 0 || text[i - 1] !== "/")
+    return null;
+  const start = i - 1;
+  if (start > 0 && !/\s/.test(text[start - 1]))
+    return null;
+  let end = cursor;
+  while (end < text.length && TOKEN_CHARS.test(text[end]))
+    end++;
+  return { start, end, query: text.slice(i, cursor) };
+}
+function matchSkills(query, skills) {
+  const q = query.toLowerCase();
+  if (!q)
+    return skills.slice();
+  const prefix = [];
+  const substring = [];
+  for (const s of skills) {
+    const slug = skillSlug(s.name);
+    const name = s.name.toLowerCase();
+    if (slug.startsWith(q) || name.startsWith(q))
+      prefix.push(s);
+    else if (slug.includes(q) || name.includes(q))
+      substring.push(s);
+  }
+  return [...prefix, ...substring];
+}
+function resolveSkillToken(text, skills) {
+  let skill = null;
+  const cuts = [];
+  TOKEN_RE.lastIndex = 0;
+  for (let m = TOKEN_RE.exec(text); m !== null; m = TOKEN_RE.exec(text)) {
+    const q = m[2].toLowerCase();
+    const hit = skills.find((s) => skillSlug(s.name) === q || s.name.toLowerCase() === q);
+    if (!hit)
+      continue;
+    skill = hit;
+    cuts.push({ start: m.index + m[1].length, end: m.index + m[0].length });
+  }
+  if (!skill)
+    return { skill: null, cleaned: text };
+  let cleaned = text;
+  for (let i = cuts.length - 1; i >= 0; i--) {
+    cleaned = cleaned.slice(0, cuts[i].start) + cleaned.slice(cuts[i].end);
+  }
+  return { skill, cleaned: cleaned.replace(/[ \t]{2,}/g, " ") };
+}
+
 // src/modals.ts
+var MAX_SUGGESTIONS = 8;
+var MIRROR_PROPS = [
+  "boxSizing",
+  "width",
+  "paddingTop",
+  "paddingRight",
+  "paddingBottom",
+  "paddingLeft",
+  "borderTopWidth",
+  "borderRightWidth",
+  "borderBottomWidth",
+  "borderLeftWidth",
+  "fontFamily",
+  "fontSize",
+  "fontWeight",
+  "fontStyle",
+  "letterSpacing",
+  "lineHeight",
+  "textTransform",
+  "wordSpacing",
+  "textIndent"
+];
+function caretCoords(ta, index) {
+  const cs = window.getComputedStyle(ta);
+  const mirror = document.body.createDiv();
+  const style = mirror.style;
+  const computed = cs;
+  for (const p of MIRROR_PROPS)
+    style[p] = computed[p];
+  style.position = "absolute";
+  style.top = "0";
+  style.left = "-9999px";
+  style.visibility = "hidden";
+  style.height = "auto";
+  style.whiteSpace = "pre-wrap";
+  style.overflowWrap = "break-word";
+  mirror.setText(ta.value.slice(0, index));
+  const marker = mirror.createSpan({ text: "\u200B" });
+  mirror.createSpan({ text: ta.value.slice(index) });
+  const left = marker.offsetLeft;
+  const top = marker.offsetTop;
+  const height = marker.offsetHeight || parseFloat(cs.lineHeight) || 16;
+  mirror.remove();
+  return { left: left - ta.scrollLeft, top: top - ta.scrollTop, height };
+}
 var PROVIDER_LABELS = {
   ollama: "Ollama",
   openai: "OpenAI",
@@ -3728,70 +3833,291 @@ var RewriteModal = class extends import_obsidian4.Modal {
     super(app);
     this.selectedSkill = null;
     this.instruction = "";
+    // Built in onOpen(); every handler runs after that, so the null checks at
+    // their use sites never actually fire.
+    this.infoButton = null;
+    this.skillDropdown = null;
+    this.inputEl = null;
+    this.suggestEl = null;
+    this.modelInput = null;
+    /** Skills currently listed in the popup; empty means the popup is closed. */
+    this.suggestions = [];
+    this.activeIndex = 0;
+    /** Offset of the `/` the popup is anchored to. */
+    this.tokenStart = 0;
+    /** True when the current selection came from a `/token`, so deleting it clears. */
+    this.skillFromText = false;
     this.skills = skills;
     this.defaults = defaults;
     this.provider = defaults.provider;
-    this.model = defaults.model;
+    this.model = defaults.models[defaults.provider] ?? "";
     this.onSubmit = onSubmit;
   }
   onOpen() {
     const { contentEl } = this;
     contentEl.addClass("skillwright-modal");
     contentEl.createEl("h3", { text: "Rewrite selection" });
-    new import_obsidian4.Setting(contentEl).setName("Skill").setDesc("Optional. Loaded from your skills folder.").addDropdown((dd) => {
-      dd.addOption("", "\u2014 none (instruction only) \u2014");
-      for (const s of this.skills)
-        dd.addOption(s.name, s.name);
-      dd.onChange((v) => {
-        this.selectedSkill = this.skills.find((s) => s.name === v) ?? null;
-        descEl.setText(this.selectedSkill?.description ?? "");
-      });
-    });
-    const descEl = contentEl.createEl("div", { cls: "skillwright-skill-desc" });
-    new import_obsidian4.Setting(contentEl).setName("Instruction").setDesc('e.g. "rewrite in Lab Notes voice", "tighten to half length"').addTextArea((ta) => {
-      ta.setPlaceholder("What should happen to the selection?");
-      ta.inputEl.rows = 3;
+    new import_obsidian4.Setting(contentEl).setName("Instruction").setDesc('e.g. "rewrite in Lab Notes voice /jchimp-brand", "tighten to half length"').setClass("skillwright-instruction-row").addTextArea((ta) => {
+      ta.setPlaceholder("What should happen to the selection?  Type / to pick a skill.");
+      ta.inputEl.rows = 4;
       ta.inputEl.addClass("skillwright-instruction");
-      ta.onChange((v) => this.instruction = v);
+      this.inputEl = ta.inputEl;
+      const wrap = ta.inputEl.parentElement?.createDiv({ cls: "skillwright-instruction-wrap" });
+      if (wrap) {
+        wrap.appendChild(ta.inputEl);
+        this.suggestEl = wrap.createDiv({ cls: "skillwright-suggest" });
+        this.suggestEl.hide();
+      }
       window.setTimeout(() => ta.inputEl.focus(), 0);
-      ta.inputEl.addEventListener("keydown", (e) => {
-        if ((e.ctrlKey || e.metaKey) && e.key === "Enter")
-          this.submit();
+      for (const ev of ["input", "keyup", "click"]) {
+        ta.inputEl.addEventListener(ev, () => this.syncFromText());
+      }
+      ta.inputEl.addEventListener("keydown", (e) => this.onInputKeydown(e));
+      ta.inputEl.addEventListener("blur", () => window.setTimeout(() => this.closeSuggest(), 100));
+    });
+    new import_obsidian4.Setting(contentEl).setName("Skill").setDesc("Optional. Loaded from your skills folder.").addExtraButton((b) => {
+      this.infoButton = b;
+      b.setIcon("info").setTooltip("Show skill description").setDisabled(true).onClick(() => {
+        const skill = this.selectedSkill;
+        if (!skill)
+          return;
+        new InfoModal(this.app, {
+          heading: skill.name,
+          body: skill.description || "No description in this skill's frontmatter.",
+          muted: !skill.description,
+          footnote: skill.filePath
+        }).open();
+      });
+    }).addDropdown((dd) => {
+      this.skillDropdown = dd;
+      dd.addOption("", "\u2014 none (instruction only) \u2014");
+      this.skills.forEach((s, i) => dd.addOption(String(i), s.name));
+      dd.onChange((v) => {
+        this.setSkill(v === "" ? null : this.skills[Number(v)] ?? null, "dropdown");
       });
     });
     new import_obsidian4.Setting(contentEl).setName("Provider / model").addDropdown((dd) => {
       for (const [id, label] of Object.entries(PROVIDER_LABELS))
         dd.addOption(id, label);
       dd.setValue(this.provider);
-      dd.onChange((v) => this.provider = v);
+      dd.onChange((v) => {
+        this.provider = v;
+        this.model = this.defaults.models[this.provider] ?? "";
+        this.modelInput?.setValue(this.model);
+      });
     }).addText((t) => {
-      t.setPlaceholder("model override (optional)");
+      this.modelInput = t;
+      t.setPlaceholder("model (from settings)");
+      t.setValue(this.model);
       t.onChange((v) => this.model = v.trim());
     });
     new import_obsidian4.Setting(contentEl).addButton(
       (b) => b.setButtonText("Rewrite (Ctrl+Enter)").setCta().onClick(() => this.submit())
     );
   }
+  /**
+   * Points every view of the selection at one skill.
+   *
+   * @param skill - the skill now in effect, or null for none
+   * @param source - `"text"` for a `/token`, `"dropdown"` for the picker. A text
+   *   change also moves the dropdown; the reverse would fight the user's typing.
+   */
+  setSkill(skill, source) {
+    this.selectedSkill = skill;
+    this.skillFromText = source === "text" && skill !== null;
+    this.infoButton?.setDisabled(!skill);
+    this.infoButton?.setTooltip(skill ? `About "${skill.name}"` : "Show skill description");
+    if (source === "text") {
+      const i = skill ? this.skills.indexOf(skill) : -1;
+      this.skillDropdown?.setValue(i >= 0 ? String(i) : "");
+    }
+  }
+  /** Re-reads the textarea after any edit: resolves `/tokens`, repaints the popup. */
+  syncFromText() {
+    const el = this.inputEl;
+    if (!el)
+      return;
+    this.instruction = el.value;
+    const { skill } = resolveSkillToken(el.value, this.skills);
+    if (skill)
+      this.setSkill(skill, "text");
+    else if (this.skillFromText)
+      this.setSkill(null, "text");
+    const token = tokenAtCursor(el.value, el.selectionStart);
+    if (!token) {
+      this.closeSuggest();
+      return;
+    }
+    this.tokenStart = token.start;
+    this.openSuggest(matchSkills(token.query, this.skills).slice(0, MAX_SUGGESTIONS));
+  }
+  openSuggest(matches) {
+    const box = this.suggestEl;
+    if (!box)
+      return;
+    if (!matches.length) {
+      this.closeSuggest();
+      return;
+    }
+    this.suggestions = matches;
+    this.activeIndex = Math.min(this.activeIndex, matches.length - 1);
+    box.empty();
+    matches.forEach((s, i) => {
+      const row = box.createDiv({ cls: "skillwright-suggest-item" });
+      row.toggleClass("is-active", i === this.activeIndex);
+      row.createDiv({ cls: "skillwright-suggest-name", text: skillSlug(s.name) });
+      if (s.description) {
+        row.createDiv({ cls: "skillwright-suggest-desc", text: s.description });
+      }
+      row.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        this.acceptSuggestion(i);
+      });
+    });
+    box.show();
+    this.positionSuggest();
+  }
+  /**
+   * Anchors the popup under the `/` that opened it. Measured after the rows are
+   * in the DOM, so the box's own width is known and can be clamped against the
+   * textarea's right edge instead of spilling out of the modal.
+   */
+  positionSuggest() {
+    const el = this.inputEl;
+    const box = this.suggestEl;
+    if (!el || !box)
+      return;
+    const { left, top, height } = caretCoords(el, this.tokenStart);
+    const maxLeft = Math.max(0, el.offsetWidth - box.offsetWidth);
+    box.style.left = `${el.offsetLeft + Math.min(Math.max(left, 0), maxLeft)}px`;
+    box.style.top = `${el.offsetTop + top + height + 4}px`;
+  }
+  closeSuggest() {
+    this.suggestions = [];
+    this.activeIndex = 0;
+    this.suggestEl?.hide();
+  }
+  moveActive(delta) {
+    const n = this.suggestions.length;
+    if (!n)
+      return;
+    this.activeIndex = (this.activeIndex + delta + n) % n;
+    this.openSuggest(this.suggestions);
+  }
+  /** Splices `/<slug> ` over the token under the caret. */
+  acceptSuggestion(index) {
+    const el = this.inputEl;
+    const skill = this.suggestions[index];
+    if (!el || !skill)
+      return;
+    const token = tokenAtCursor(el.value, el.selectionStart);
+    if (!token) {
+      this.closeSuggest();
+      return;
+    }
+    const insert = `/${skillSlug(skill.name)} `;
+    el.value = el.value.slice(0, token.start) + insert + el.value.slice(token.end);
+    const caret = token.start + insert.length;
+    el.setSelectionRange(caret, caret);
+    this.instruction = el.value;
+    this.closeSuggest();
+    this.setSkill(skill, "text");
+    el.focus();
+  }
+  onInputKeydown(e) {
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+      this.submit();
+      return;
+    }
+    if (!this.suggestions.length)
+      return;
+    switch (e.key) {
+      case "ArrowDown":
+        e.preventDefault();
+        this.moveActive(1);
+        break;
+      case "ArrowUp":
+        e.preventDefault();
+        this.moveActive(-1);
+        break;
+      case "Enter":
+      case "Tab":
+        e.preventDefault();
+        this.acceptSuggestion(this.activeIndex);
+        break;
+      case "Escape":
+        e.preventDefault();
+        e.stopPropagation();
+        this.closeSuggest();
+        break;
+    }
+  }
   submit() {
-    if (!this.selectedSkill && !this.instruction.trim()) {
+    const text = this.inputEl?.value ?? this.instruction;
+    const { skill, cleaned } = resolveSkillToken(text, this.skills);
+    const chosen = skill ?? this.selectedSkill;
+    const instruction = cleaned.trim();
+    if (!chosen && !instruction) {
       new import_obsidian4.Notice("Pick a skill or type an instruction.");
       return;
     }
     this.close();
     this.onSubmit({
-      skill: this.selectedSkill,
-      instruction: this.instruction.trim(),
+      skill: chosen,
+      instruction,
       provider: this.provider,
-      model: this.model || (this.provider === this.defaults.provider ? this.defaults.model : "")
+      // Blank falls back to the provider's configured model in main.ts.
+      model: this.model
     });
   }
   onClose() {
     this.contentEl.empty();
   }
 };
+var InfoModal = class extends import_obsidian4.Modal {
+  constructor(app, opts) {
+    super(app);
+    this.opts = opts;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.addClass("skillwright-modal", "skillwright-info");
+    contentEl.createEl("h3", { text: this.opts.heading });
+    contentEl.createEl("div", {
+      text: this.opts.body,
+      cls: this.opts.muted ? "skillwright-info-desc is-empty" : "skillwright-info-desc"
+    });
+    if (this.opts.footnote) {
+      contentEl.createEl("div", { text: this.opts.footnote, cls: "skillwright-info-path" });
+    }
+  }
+  onClose() {
+    this.contentEl.empty();
+  }
+};
+var TEMP_TOOLTIP = "Lower is steadier, higher is more varied. Click for detail.";
+var TEMP_EXPLAINER = [
+  "Temperature controls how much the model varies its wording from one run to the next.",
+  "",
+  "0.0 \u2013 0.3   Near-deterministic. Re-runs come back nearly identical. Best when you want a skill's voice followed closely, or when comparing two prompts fairly.",
+  "",
+  "0.7   The default. Attempts differ noticeably in phrasing while still following the instruction.",
+  "",
+  "1.0 \u2013 2.0   Progressively looser and more inventive, and progressively more likely to drift off the instruction or out of the skill's voice.",
+  "",
+  "The same prompt at the same temperature still varies \u2014 only 0 is close to repeatable. To compare, re-run a few times and step through the attempts with \u2039 \u203A."
+].join("\n");
 function fitToContent(ta) {
   ta.style.height = "auto";
   ta.style.height = `${ta.scrollHeight}px`;
+}
+var TEMP_MIN = 0;
+var TEMP_MAX = 2;
+function clampTemperature(raw, fallback) {
+  const n = Number.parseFloat(raw);
+  if (Number.isNaN(n))
+    return fallback;
+  return Math.min(TEMP_MAX, Math.max(TEMP_MIN, n));
 }
 var ResultModal = class extends import_obsidian4.Modal {
   constructor(app, opts) {
@@ -3845,6 +4171,22 @@ var ResultModal = class extends import_obsidian4.Modal {
     });
     this.paneEl = contentEl.createEl("div", { cls: "skillwright-pane" });
     const row = contentEl.createEl("div", { cls: "skillwright-actions" });
+    const temp = row.createEl("div", { cls: "skillwright-temp" });
+    const tempId = "skillwright-temp-input";
+    temp.createEl("label", { text: "Temp", attr: { for: tempId } });
+    this.tempInput = temp.createEl("input", {
+      attr: { id: tempId, type: "number", min: String(TEMP_MIN), max: String(TEMP_MAX), step: "0.1" }
+    });
+    this.tempInput.title = "Sampling temperature for the next Re-Run. Does not change the setting.";
+    this.tempInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        this.rerun();
+      }
+    });
+    new import_obsidian4.ExtraButtonComponent(temp).setIcon("info").setTooltip(TEMP_TOOLTIP).onClick(
+      () => new InfoModal(this.app, { heading: "Temperature", body: TEMP_EXPLAINER }).open()
+    );
     this.rerunButton = new import_obsidian4.ButtonComponent(row).setButtonText("Re-Run").onClick(() => this.rerun());
     this.replaceButton = new import_obsidian4.ButtonComponent(row).setButtonText("Replace").setCta().onClick(() => this.act("replace"));
     this.insertButton = new import_obsidian4.ButtonComponent(row).setButtonText("Insert below").onClick(() => this.act("insert"));
@@ -3864,6 +4206,12 @@ var ResultModal = class extends import_obsidian4.Modal {
       text: current.meta.skill ? `Skill: ${current.meta.skill}` : "Skill: none (instruction only)",
       cls: "skillwright-meta-item"
     });
+    this.metaEl.createEl("span", {
+      text: `Temp: ${current.meta.temperature}`,
+      cls: "skillwright-meta-item"
+    });
+    this.tempInput.value = String(current.meta.temperature);
+    this.tempInput.disabled = this.busy;
     this.diffToggleBtn.toggleClass("is-active", this.view === "diff");
     this.editToggleBtn.toggleClass("is-active", this.view === "edit");
     const multi = this.attempts.length > 1;
@@ -3900,12 +4248,17 @@ var ResultModal = class extends import_obsidian4.Modal {
   async rerun() {
     if (this.busy)
       return;
+    const temperature = clampTemperature(
+      this.tempInput.value,
+      this.attempts[this.index].meta.temperature
+    );
     this.busy = true;
+    this.tempInput.disabled = true;
     this.rerunButton.setDisabled(true);
     this.rerunButton.setButtonText("Re-running\u2026");
     this.setActionsEnabled(false);
     try {
-      const { text, meta } = await this.onRerun();
+      const { text, meta } = await this.onRerun(temperature);
       if (this.closed)
         return;
       this.attempts.push({ text, edited: text, meta });
@@ -3917,6 +4270,7 @@ var ResultModal = class extends import_obsidian4.Modal {
     } finally {
       if (!this.closed) {
         this.busy = false;
+        this.tempInput.disabled = false;
         this.rerunButton.setDisabled(false);
         this.rerunButton.setButtonText("Re-Run");
         this.setActionsEnabled(true);
@@ -4111,7 +4465,11 @@ var SkillwrightPlugin = class extends import_obsidian6.Plugin {
     const s = this.settings;
     const defaults = {
       provider: s.defaultProvider,
-      model: s[s.defaultProvider].model
+      models: {
+        ollama: s.ollama.model,
+        openai: s.openai.model,
+        anthropic: s.anthropic.model
+      }
     };
     new RewriteModal(this.app, skills, defaults, async (choice) => {
       const provider = choice.provider;
@@ -4135,19 +4493,22 @@ var SkillwrightPlugin = class extends import_obsidian6.Plugin {
         ].filter(Boolean);
         new import_obsidian6.Notice(`Skillwright: ${warnings.join("; ")}.`, 8e3);
       }
-      const runOnce = async () => {
+      const runOnce = async (temperature) => {
         const text = (await chat(
           provider,
           { baseUrl: cfg.baseUrl, apiKey: cfg.apiKey ?? "", model: cfg.model },
-          { system, user, temperature: s.temperature, maxTokens: s.maxTokens }
+          { system, user, temperature, maxTokens: s.maxTokens }
         )).trim();
         if (!text)
           throw new Error("Empty response from model.");
-        return { text, meta: { provider, model: cfg.model, skill: choice.skill?.name ?? null } };
+        return {
+          text,
+          meta: { provider, model: cfg.model, skill: choice.skill?.name ?? null, temperature }
+        };
       };
       const notice = new import_obsidian6.Notice(`Skillwright: asking ${provider} (${cfg.model})\u2026`, 0);
       try {
-        const first = await runOnce();
+        const first = await runOnce(s.temperature);
         notice.hide();
         this.showResult(editor, selection, choice, first, runOnce);
       } catch (e) {

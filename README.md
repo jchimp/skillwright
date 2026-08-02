@@ -65,4 +65,4 @@ For development: symlink the repo into the plugins folder and use `npm run dev` 
 ## Notes / caveats
 
 - API keys are stored **in plain text** in `data.json` in the vault's plugin folder. Don't sync the vault anywhere untrusted, or use Ollama.
-- The per-rewrite provider/model override in the modal falls back to the settings default when left blank.
+- The modal's model field is pre-filled with the selected provider's configured model, and re-fills when you switch providers. Edit it to override for one rewrite; blank falls back to the settings default.

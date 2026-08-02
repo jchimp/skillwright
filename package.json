@@ -1,6 +1,6 @@
 {
   "name": "skillwright",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "LLM rewrite for Obsidian with Claude Code-style skills",
   "main": "main.js",
   "scripts": {
