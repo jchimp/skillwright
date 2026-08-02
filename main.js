@@ -2863,7 +2863,144 @@ async function parseSkill(app, file, fallbackName, folder) {
     } catch {
     }
   }
-  return { name, description, body: body.trim(), folder };
+  return { name, description, body: body.trim(), folder, filePath: file.path };
+}
+var MD_LINK_RE = /\[[^\]]*\]\(([^)\s]+)\)/g;
+var WIKILINK_RE = /\[\[([^\]|#]+)(?:\|[^\]]*)?\]\]/g;
+var BARE_FILE_RE = /(?<![\w/([.:-])[\w][\w.\-/]*\.md\b/g;
+var MAX_DEPTH = 2;
+function extractTargets(body) {
+  const out = [];
+  for (const re of [MD_LINK_RE, WIKILINK_RE]) {
+    re.lastIndex = 0;
+    for (let m = re.exec(body); m; m = re.exec(body))
+      out.push(m[1]);
+  }
+  BARE_FILE_RE.lastIndex = 0;
+  for (let m = BARE_FILE_RE.exec(body); m; m = BARE_FILE_RE.exec(body))
+    out.push(m[0]);
+  return out;
+}
+var IGNORE = { kind: "ignore" };
+var REJECT = { kind: "reject" };
+function resolveTarget(target, fromFolder, skillsFolder) {
+  let t = target.trim();
+  if (!t || t.startsWith("#"))
+    return IGNORE;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(t) || t.startsWith("//"))
+    return IGNORE;
+  t = t.split("#")[0].split("?")[0];
+  try {
+    t = decodeURIComponent(t);
+  } catch {
+  }
+  if (!t)
+    return IGNORE;
+  if (!t.toLowerCase().endsWith(".md")) {
+    if (/\.[a-z0-9]+$/i.test(t))
+      return IGNORE;
+    t = `${t}.md`;
+  }
+  const base = t.startsWith("/") ? t.slice(1) : `${fromFolder}/${t}`;
+  const parts = [];
+  for (const part of (0, import_obsidian2.normalizePath)(base).split("/")) {
+    if (part === "." || part === "")
+      continue;
+    if (part === "..") {
+      if (parts.length === 0)
+        return REJECT;
+      parts.pop();
+      continue;
+    }
+    parts.push(part);
+  }
+  const path = parts.join("/");
+  const root = (0, import_obsidian2.normalizePath)(skillsFolder).replace(/\/+$/, "");
+  if (path !== root && !path.startsWith(`${root}/`))
+    return REJECT;
+  return { kind: "path", path };
+}
+async function resolveSkillRefs(app, skill, skillsFolder, budgetChars) {
+  const refs = [];
+  const skipped = [];
+  const missing = [];
+  const skillPath = (0, import_obsidian2.normalizePath)(skill.filePath);
+  const visited = /* @__PURE__ */ new Set([skillPath]);
+  const seenMissing = /* @__PURE__ */ new Set();
+  let queue = [{ body: skill.body, folder: skill.folder }];
+  let used = 0;
+  const reportMissing = (target) => {
+    if (seenMissing.has(target))
+      return;
+    seenMissing.add(target);
+    missing.push(target);
+  };
+  for (let depth = 0; depth < MAX_DEPTH && queue.length > 0; depth++) {
+    const next = [];
+    for (const node of queue) {
+      for (const target of extractTargets(node.body)) {
+        const result = resolveTarget(target, node.folder, skillsFolder);
+        if (result.kind === "ignore")
+          continue;
+        if (result.kind === "reject") {
+          reportMissing(target);
+          continue;
+        }
+        const path = result.path;
+        if (visited.has(path))
+          continue;
+        visited.add(path);
+        let file = app.vault.getAbstractFileByPath(path);
+        if (!(file instanceof import_obsidian2.TFile) && !target.includes("/")) {
+          const found = findByBasename(app, skill.folder, path.split("/").pop() ?? "");
+          if (found) {
+            if (visited.has(found.path))
+              continue;
+            visited.add(found.path);
+            file = found;
+          }
+        }
+        if (!(file instanceof import_obsidian2.TFile)) {
+          reportMissing(target);
+          continue;
+        }
+        const body = (await app.vault.cachedRead(file)).trim();
+        const name = relativeName(file.path, skill.folder);
+        if (used + body.length > budgetChars) {
+          skipped.push(name);
+          continue;
+        }
+        used += body.length;
+        refs.push({ path: file.path, name, body });
+        next.push({ body, folder: file.parent?.path ?? node.folder });
+      }
+    }
+    queue = next;
+  }
+  return { refs, skipped, missing };
+}
+function findByBasename(app, skillFolder, basename) {
+  if (!basename)
+    return null;
+  const root = app.vault.getAbstractFileByPath((0, import_obsidian2.normalizePath)(skillFolder));
+  if (!(root instanceof import_obsidian2.TFolder))
+    return null;
+  const want = basename.toLowerCase();
+  const stack = [root];
+  while (stack.length > 0) {
+    const folder = stack.pop();
+    for (const child of folder.children) {
+      if (child instanceof import_obsidian2.TFile && child.name.toLowerCase() === want)
+        return child;
+      if (child instanceof import_obsidian2.TFolder)
+        stack.push(child);
+    }
+  }
+  return null;
+}
+function relativeName(path, folder) {
+  const f = (0, import_obsidian2.normalizePath)(folder).replace(/\/+$/, "");
+  return path.startsWith(`${f}/`) ? path.slice(f.length + 1) : path;
 }
 async function importSkillsZip(app, skillsFolder, data) {
   const zip = await import_jszip.default.loadAsync(data);
@@ -2873,7 +3010,9 @@ async function importSkillsZip(app, skillsFolder, data) {
     return 0;
   }
   const tops = new Set(entries.map((e) => e.name.split("/")[0]));
-  const strip = tops.size === 1 && entries.every((e) => e.name.includes("/")) ? `${[...tops][0]}/` : "";
+  const top = [...tops][0];
+  const topIsSkill = entries.some((e) => e.name.toLowerCase() === `${top.toLowerCase()}/skill.md`);
+  const strip = tops.size === 1 && !topIsSkill && entries.every((e) => e.name.includes("/")) ? `${top}/` : "";
   await ensureFolder(app, skillsFolder);
   let written = 0;
   for (const entry of entries) {
@@ -2914,6 +3053,11 @@ async function ensureFolder(app, path) {
 
 // src/modals.ts
 var import_obsidian3 = require("obsidian");
+var PROVIDER_LABELS = {
+  ollama: "Ollama",
+  openai: "OpenAI",
+  anthropic: "Anthropic"
+};
 var RewriteModal = class extends import_obsidian3.Modal {
   constructor(app, skills, defaults, onSubmit) {
     super(app);
@@ -2951,9 +3095,8 @@ var RewriteModal = class extends import_obsidian3.Modal {
       });
     });
     new import_obsidian3.Setting(contentEl).setName("Provider / model").addDropdown((dd) => {
-      dd.addOption("ollama", "Ollama");
-      dd.addOption("openai", "OpenAI");
-      dd.addOption("anthropic", "Anthropic");
+      for (const [id, label] of Object.entries(PROVIDER_LABELS))
+        dd.addOption(id, label);
       dd.setValue(this.provider);
       dd.onChange((v) => this.provider = v);
     }).addText((t) => {
@@ -2982,11 +3125,12 @@ var RewriteModal = class extends import_obsidian3.Modal {
   }
 };
 var ResultModal = class extends import_obsidian3.Modal {
-  constructor(app, title, original, result, onAction) {
+  constructor(app, title, original, result, meta, onAction) {
     super(app);
     this.title = title;
     this.original = original;
     this.result = result;
+    this.meta = meta;
     this.edited = result;
     this.onAction = onAction;
   }
@@ -2994,6 +3138,15 @@ var ResultModal = class extends import_obsidian3.Modal {
     const { contentEl } = this;
     contentEl.addClass("skillwright-modal", "skillwright-result");
     contentEl.createEl("h3", { text: this.title });
+    const meta = contentEl.createEl("div", { cls: "skillwright-meta" });
+    meta.createEl("span", {
+      text: `${PROVIDER_LABELS[this.meta.provider] ?? this.meta.provider} \xB7 ${this.meta.model}`,
+      cls: "skillwright-meta-item"
+    });
+    meta.createEl("span", {
+      text: this.meta.skill ? `Skill: ${this.meta.skill}` : "Skill: none (instruction only)",
+      cls: "skillwright-meta-item"
+    });
     contentEl.createEl("div", { text: "Original", cls: "skillwright-label" });
     contentEl.createEl("div", { text: this.original, cls: "skillwright-original" });
     contentEl.createEl("div", { text: "Result (editable)", cls: "skillwright-label" });
@@ -3023,6 +3176,7 @@ var DEFAULT_SETTINGS = {
   skillsFolder: "_skills",
   temperature: 0.7,
   maxTokens: 2048,
+  refBudgetChars: 4e4,
   ollama: { baseUrl: "http://localhost:11434", model: "llama3.1" },
   openai: { baseUrl: "https://api.openai.com", apiKey: "", model: "gpt-4o-mini" },
   anthropic: { baseUrl: "https://api.anthropic.com", apiKey: "", model: "claude-sonnet-4-6" }
@@ -3065,6 +3219,16 @@ var SkillwrightSettingTab = class extends import_obsidian4.PluginSettingTab {
         const n = parseInt(v, 10);
         if (!Number.isNaN(n) && n > 0)
           s.maxTokens = n;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian4.Setting(containerEl).setName("Reference budget (characters)").setDesc(
+      "Cap on the reference files a skill pulls into the prompt. Files past the cap are skipped, with a notice."
+    ).addText(
+      (t) => t.setValue(String(s.refBudgetChars)).onChange(async (v) => {
+        const n = parseInt(v, 10);
+        if (!Number.isNaN(n) && n > 0)
+          s.refBudgetChars = n;
         await this.plugin.saveSettings();
       })
     );
@@ -3198,8 +3362,15 @@ var SkillwrightPlugin = class extends import_obsidian5.Plugin {
         new import_obsidian5.Notice(`No API key configured for ${provider}.`);
         return;
       }
-      const system = this.buildSystem(choice.skill);
+      const { system, skipped, missing } = await this.buildSystem(choice.skill);
       const user = this.buildUser(selection, choice.instruction, choice.skill);
+      if (skipped.length || missing.length) {
+        const warnings = [
+          skipped.length ? `${skipped.length} reference(s) over budget (${skipped.join(", ")})` : "",
+          missing.length ? `${missing.length} not found (${missing.join(", ")})` : ""
+        ].filter(Boolean);
+        new import_obsidian5.Notice(`Skillwright: ${warnings.join("; ")}.`, 8e3);
+      }
       const notice = new import_obsidian5.Notice(`Skillwright: asking ${provider} (${cfg.model})\u2026`, 0);
       try {
         const result = await chat(provider, {
@@ -3217,32 +3388,55 @@ var SkillwrightPlugin = class extends import_obsidian5.Plugin {
           new import_obsidian5.Notice("Empty response from model.");
           return;
         }
-        this.showResult(editor, selection, result.trim(), choice);
+        this.showResult(editor, selection, result.trim(), choice, {
+          provider,
+          model: cfg.model,
+          skill: choice.skill?.name ?? null
+        });
       } catch (e) {
         notice.hide();
         new import_obsidian5.Notice(`Skillwright error: ${e.message}`, 8e3);
       }
     }).open();
   }
-  buildSystem(skill) {
+  async buildSystem(skill) {
     if (!skill)
-      return SYSTEM_BASE;
-    return [
+      return { system: SYSTEM_BASE, skipped: [], missing: [] };
+    const { refs, skipped, missing } = await resolveSkillRefs(
+      this.app,
+      skill,
+      this.settings.skillsFolder,
+      this.settings.refBudgetChars
+    );
+    const parts = [
       SYSTEM_BASE,
       "",
       `## Active skill: ${skill.name}`,
       skill.description ? `(${skill.description})` : "",
+      `Skill folder: ${skill.folder}`,
       "",
       skill.body
-    ].join("\n");
+    ];
+    if (refs.length) {
+      parts.push(
+        "",
+        "## Reference files",
+        "Files referenced by this skill are reproduced in full below. You have no file",
+        "access \u2014 do not ask for other files, and do not mention these paths in your output."
+      );
+      for (const ref of refs) {
+        parts.push("", `### ${ref.name}  (${ref.path})`, "", ref.body);
+      }
+    }
+    return { system: parts.join("\n"), skipped, missing };
   }
   buildUser(selection, instruction, skill) {
     const task = instruction || (skill ? `Apply the "${skill.name}" skill to the passage.` : "Improve the passage.");
     return [`Task: ${task}`, "", "Passage:", "<<<", selection, ">>>"].join("\n");
   }
-  showResult(editor, original, result, choice) {
+  showResult(editor, original, result, choice, meta) {
     const title = choice.skill ? `Result \u2014 ${choice.skill.name}` : "Result";
-    new ResultModal(this.app, title, original, result, async (action, text) => {
+    new ResultModal(this.app, title, original, result, meta, async (action, text) => {
       switch (action) {
         case "replace":
           editor.replaceSelection(text);

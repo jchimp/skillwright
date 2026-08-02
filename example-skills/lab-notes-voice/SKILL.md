@@ -10,3 +10,5 @@ Rewrite the passage in a "Lab Notes" technical register:
 - Concrete over abstract: name the tool, the command, the error.
 - Dry humor allowed, one beat max. Never exclamation points.
 - Keep code blocks and inline code untouched.
+
+Apply the banned words and phrasings in [ref-word-list.md](ref-word-list.md).

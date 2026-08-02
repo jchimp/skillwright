@@ -7,6 +7,8 @@ export interface SkillwrightSettings {
   skillsFolder: string;
   temperature: number;
   maxTokens: number;
+  /** Char cap on skill reference files inlined into the system prompt */
+  refBudgetChars: number;
   ollama: { baseUrl: string; model: string };
   openai: { baseUrl: string; apiKey: string; model: string };
   anthropic: { baseUrl: string; apiKey: string; model: string };
@@ -17,6 +19,7 @@ export const DEFAULT_SETTINGS: SkillwrightSettings = {
   skillsFolder: "_skills",
   temperature: 0.7,
   maxTokens: 2048,
+  refBudgetChars: 40000,
   ollama: { baseUrl: "http://localhost:11434", model: "llama3.1" },
   openai: { baseUrl: "https://api.openai.com", apiKey: "", model: "gpt-4o-mini" },
   anthropic: { baseUrl: "https://api.anthropic.com", apiKey: "", model: "claude-sonnet-4-6" },
@@ -74,6 +77,19 @@ export class SkillwrightSettingTab extends PluginSettingTab {
         t.setValue(String(s.maxTokens)).onChange(async (v) => {
           const n = parseInt(v, 10);
           if (!Number.isNaN(n) && n > 0) s.maxTokens = n;
+          await this.plugin.saveSettings();
+        })
+      );
+
+    new Setting(containerEl)
+      .setName("Reference budget (characters)")
+      .setDesc(
+        "Cap on the reference files a skill pulls into the prompt. Files past the cap are skipped, with a notice."
+      )
+      .addText((t) =>
+        t.setValue(String(s.refBudgetChars)).onChange(async (v) => {
+          const n = parseInt(v, 10);
+          if (!Number.isNaN(n) && n > 0) s.refBudgetChars = n;
           await this.plugin.saveSettings();
         })
       );

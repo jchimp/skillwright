@@ -10,6 +10,21 @@
   font-family: var(--font-text);
 }
 
+.skillwright-result .skillwright-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: -4px 0 4px 0;
+}
+
+.skillwright-result .skillwright-meta-item {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  background: var(--background-modifier-hover);
+  border-radius: var(--radius-s);
+  padding: 2px 8px;
+}
+
 .skillwright-result .skillwright-label {
   font-size: var(--font-ui-smaller);
   color: var(--text-muted);
