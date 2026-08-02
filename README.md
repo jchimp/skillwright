@@ -2,11 +2,11 @@
 
 LLM rewriting for Obsidian with **Claude Code-style skills**. Highlight text, pick a skill and/or type an instruction, review the result in a preview modal, then Replace / Insert Below / Copy.
 
-The preview modal reports the provider, the model that actually ran (after any per-rewrite override), and which skill was applied — so a result you didn't expect is traceable to the settings that produced it.
+The preview modal reports the provider, the model that actually ran (after any per-rewrite override), and which skill was applied — so a result you didn't expect is traceable to the settings that produced it. It opens on an inline diff of the original against the result; a `Diff | Edit` toggle switches to an editable textarea, and edits made there show up in the diff when you switch back. **Re-Run** reissues the identical request — same skill, instruction, provider/model, temperature — without closing the modal, and keeps every attempt: `‹ attempt 2 / 3 ›` arrows flip between them, and Replace / Insert below / Copy act on whichever attempt (or hand-edit) is on screen. Attempts don't survive closing the modal.
 
 ## Providers
 
-- **Ollama** — local, no key. Default `http://localhost:11434`.
+- **Ollama** — local, no key. Default `http://localhost:11434`. Local model output is inconsistent run to run, so Re-Run in the preview modal is the normal way to reroll a bad result.
 - **OpenAI** — Chat Completions, any model string.
 - **Anthropic** — Messages API, any model string.
 

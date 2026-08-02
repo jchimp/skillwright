@@ -13,4 +13,7 @@ Models that have worked with instructions and skill instructions embeded into th
 | gemma4:e2b | 7.2 | Rewrites with skill selected and 're-write in brand voice' (1/5) |
 | gemma3:4b | 3.3 | Rewrites with skill selected and 're-write in brand voice' (3/5) |
 | gpt-oss:20b | 13 | Rewrites with skill selected and 're-write in brand voice' (3/5) |
-| phi4:latest | |  | Rewrites with skill selected and 're-write in brand voice' (4/5) |
+| phi4:latest | | 9.1 | Rewrites with skill selected and 're-write in brand voice' (4/5) |
+| phi4-mini:latest | 2.5 | First runs, i got it's thinking output, next runs were interesting. Not really in brand voice, but re-written (1/5) |
+| qwen3:latest | 5.2 | Rewrites with skill selected and 're-write in brand voice' (2/5) |
+| gemma4:12b | 7.6 | Rewrites with skill selected and 're-write in brand voice' (3/5) |
