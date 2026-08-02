@@ -305,23 +305,34 @@ function relativeName(path: string, folder: string): string {
   return folder && path.startsWith(`${folder}/`) ? path.slice(folder.length + 1) : path;
 }
 
+/** What an import did: files written, plus entries refused for landing outside the folder. */
+export interface ImportResult {
+  written: number;
+  /** Entry names rejected by the containment check, so a hostile zip is visible. */
+  rejected: string[];
+}
+
 /**
  * Unpacks a skills zip into the vault's skills folder. Accepts either:
  *   skills.zip -> my-skill/SKILL.md            (skills at zip root)
  *   skills.zip -> skills/my-skill/SKILL.md     (one wrapping dir, auto-stripped)
  *
  * Writes through the vault directly — external skill folders are read-only.
+ *
+ * Entry names come from the zip, so they're whatever whoever built it chose. Every
+ * destination is checked back against the skills folder before anything is created;
+ * see {@link containedIn}.
  */
 export async function importSkillsZip(
   app: App,
   skillsFolder: string,
   data: ArrayBuffer
-): Promise<number> {
+): Promise<ImportResult> {
   const zip = await JSZip.loadAsync(data);
   const entries = Object.values(zip.files).filter((f) => !f.dir);
   if (entries.length === 0) {
     new Notice("Zip is empty.");
-    return 0;
+    return { written: 0, rejected: [] };
   }
 
   // Detect a single wrapping directory and strip it — unless that directory is itself
@@ -335,14 +346,23 @@ export async function importSkillsZip(
       ? `${top}/`
       : "";
 
-  await ensureFolder(app, skillsFolder);
+  const root = normalizePath(skillsFolder);
+  await ensureFolder(app, root);
 
   let written = 0;
+  const rejected: string[] = [];
   for (const entry of entries) {
     const rel = entry.name.startsWith(strip) ? entry.name.slice(strip.length) : entry.name;
     if (!rel || rel.startsWith("__MACOSX") || rel.endsWith(".DS_Store")) continue;
 
-    const dest = normalizePath(`${skillsFolder}/${rel}`);
+    // Some zip tools prefix every entry with "./"; normalizePath leaves the segment
+    // alone, and it would otherwise become a folder literally named ".".
+    const dest = dropCurrentDirSegments(normalizePath(`${root}/${rel}`));
+    if (!containedIn(root, dest)) {
+      rejected.push(entry.name);
+      continue;
+    }
+
     const destDir = dest.substring(0, dest.lastIndexOf("/"));
     if (destDir) await ensureFolder(app, destDir);
 
@@ -355,7 +375,35 @@ export async function importSkillsZip(
     }
     written++;
   }
-  return written;
+  return { written, rejected };
+}
+
+/** Drops no-op `.` segments a normalized path may still carry. */
+function dropCurrentDirSegments(path: string): string {
+  return path
+    .split("/")
+    .filter((seg) => seg !== ".")
+    .join("/");
+}
+
+/**
+ * Whether a destination stays under the skills folder.
+ *
+ * `normalizePath` tidies separators but leaves `..` segments alone, so a zip entry
+ * named `../.obsidian/plugins/<id>/main.js` would otherwise resolve out of the
+ * skills folder and overwrite plugin code Obsidian executes on the next load. The
+ * check is on the final path rather than a `..` blacklist, so it holds however the
+ * entry name is spelled.
+ *
+ * @param root Normalized skills folder.
+ * @param dest Normalized destination path.
+ */
+function containedIn(root: string, dest: string): boolean {
+  if (dest.split("/").some((seg) => seg === "..")) return false;
+  // normalizePath maps an empty folder to "/", and nothing is prefixed with "/" once
+  // normalized — so the vault root is its own case rather than a prefix test.
+  if (root === "/") return dest !== "/";
+  return dest !== root && dest.startsWith(`${root}/`);
 }
 
 async function ensureFolder(app: App, path: string): Promise<void> {
