@@ -229,6 +229,16 @@ export async function resolveSkillRefs(
         }
 
         let path = result.path;
+        // A skill reads its own folder. Climbing into a sibling (`../other/SKILL.md`)
+        // or addressing the store root (`/other/notes.md`) stays inside the store, so
+        // resolveTarget allows it — but it's how a skill you didn't write would inline
+        // its neighbours into a prompt bound for a provider. Reported rather than
+        // dropped, so a legitimate cross-skill link says so instead of going quiet.
+        // Loose root-level skills have no folder of their own and keep store scope.
+        if (skill.folder && !path.startsWith(`${skill.folder}/`)) {
+          reportMissing(target);
+          continue;
+        }
         if (visited.has(path)) continue;
         visited.add(path);
 

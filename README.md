@@ -52,7 +52,7 @@ Path resolution:
 - Paths are resolved relative to the file doing the referencing, so `references/BRAND.md` in a `SKILL.md` lands on `<skill>/references/BRAND.md`.
 - A **bare mention with no path** (`BRAND.md`) carries no directory, so if nothing sits next to `SKILL.md` the skill folder is searched by filename — a prose mention of `BRAND.md` finds `references/BRAND.md` without you rewriting the skill.
 - A reference file may itself reference one more: two hops from `SKILL.md`, then it stops. Each file is inlined once no matter how many times it's mentioned.
-- Only `.md` files **inside the source folder the skill came from** are read. External URLs, other file types, and paths escaping the folder (`../../secrets.md`) are never fetched — nor are symlinks pointing out of it. Anything that looked like a local reference but didn't resolve is named in a notice so a dead link doesn't fail silently.
+- Only `.md` files **inside the skill's own folder** are read. External URLs, other file types, paths escaping the folder (`../../secrets.md`), and paths reaching sideways into another skill (`../other-skill/SKILL.md`) are never fetched — nor are symlinks pointing out of it. Anything that looked like a local reference but didn't resolve is named in a notice so a dead link doesn't fail silently. (A *loose* `_skills/foo.md` skill has no folder of its own, so its references are scoped to the skills folder instead.)
 
 Resolution happens when you run a rewrite, not when the picker loads, so unused skills cost nothing.
 
@@ -100,10 +100,16 @@ There is no tool loop. The providers are plain chat completions, and Skillwright
 
 ### Skills you didn't write
 
-A skill is instructions plus whatever files it references, and both go straight into the prompt. A skill from someone else can therefore reference *other* `.md` files inside your skill folders and have them inlined into the request to your provider. It **can't** read anything outside those folders — paths escaping the folder are rejected, symlinks pointing out of it aren't followed, and non-`.md` files are never read — but "inside those folders" is the boundary, not "inside that one skill". Two things follow:
+A skill is instructions plus whatever files it references, and both go straight into the prompt. A skill from someone else therefore gets to decide which files are read on your behalf and sent to your provider — so the boundary matters.
 
-- Skim a skill from a stranger before running it, the same as any script.
-- Don't set **Skills folder** to your vault root, or that boundary becomes your entire vault.
+A skill can only read `.md` files **inside its own folder**. Not the folder next to it, not the skills folder above it. Paths that escape (`../../secrets.md`), paths that reach sideways into another skill (`../other-skill/SKILL.md`), symlinks pointing out, and non-`.md` files are all refused, and a refused reference is named in a notice rather than dropped quietly. So an imported skill can't read your other skills, and it can't read your notes.
+
+Two caveats to that:
+
+- A **loose** `_skills/foo.md` skill — a single file, no folder — has no folder to be scoped to, so its references are scoped to the skills folder instead. Loose skills are the ones you write yourself; keep it that way.
+- Don't set **Skills folder** to your vault root. It would make the loose-skill scope your entire vault, and it isn't what the setting is for.
+
+Beyond that, skim a skill from a stranger before running it, the same as any script — it's instructions to a model, and it's your API budget.
 
 Zip import enforces the same containment: entries resolving outside the skills folder are refused and named in the import notice, so a zip that tries to overwrite plugin code or config can't.
 

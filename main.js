@@ -2955,6 +2955,10 @@ async function resolveSkillRefs(skill, budgetChars) {
           continue;
         }
         let path = result.path;
+        if (skill.folder && !path.startsWith(`${skill.folder}/`)) {
+          reportMissing(target);
+          continue;
+        }
         if (visited.has(path))
           continue;
         visited.add(path);
