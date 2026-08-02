@@ -58,10 +58,10 @@
   font-size: var(--font-ui-medium);
 }
 
-/* Sized to its content and placed at the caret by positionSuggest(); it overlays
-   the controls below rather than pushing them down, so the modal doesn't jump
-   every time the popup opens. */
-.skillwright-modal .skillwright-suggest {
+/* Shared by the dialog's textarea and the inline bar's input. Sized to its
+   content and placed at the caret by SkillSuggest; it overlays whatever sits
+   below rather than pushing it down, so nothing jumps when the popup opens. */
+.skillwright-suggest {
   position: absolute;
   z-index: 2;
   width: max-content;
@@ -76,26 +76,85 @@
   box-shadow: var(--shadow-s);
 }
 
-.skillwright-modal .skillwright-suggest-item {
+.skillwright-suggest-item {
   padding: 4px 8px;
   text-align: left;
   cursor: pointer;
 }
 
-.skillwright-modal .skillwright-suggest-item.is-active {
+.skillwright-suggest-item.is-active {
   background: var(--background-modifier-hover);
 }
 
-.skillwright-modal .skillwright-suggest-name {
+.skillwright-suggest-name {
   font-size: var(--font-ui-small);
 }
 
-.skillwright-modal .skillwright-suggest-desc {
+.skillwright-suggest-desc {
   font-size: var(--font-ui-smaller);
   color: var(--text-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Inline command bar. Fixed rather than absolute: it is anchored from viewport
+   coordinates read off CodeMirror, so it needs no scroll-offset arithmetic.
+   `relative` is what the suggest popup positions itself against. */
+.skillwright-bar {
+  position: fixed;
+  z-index: var(--layer-popover);
+  min-width: 44em;
+  max-width: min(92em, 92vw);
+  padding: 6px 8px;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  box-shadow: var(--shadow-s);
+}
+
+.skillwright-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Chrome-less so the bar reads as a command line rather than a form field. */
+.skillwright-bar-input {
+  flex: 1;
+  min-width: 0;
+  padding: 2px 4px;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  font-family: var(--font-text);
+  font-size: var(--font-ui-medium);
+}
+
+.skillwright-bar-input:focus {
+  box-shadow: none;
+}
+
+.skillwright-bar-accept {
+  flex: none;
+  padding: 4px 10px;
+  font-size: var(--font-ui-small);
+}
+
+.skillwright-bar-cancel {
+  flex: none;
+}
+
+.skillwright-bar-meta {
+  padding: 0 4px;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+}
+
+/* Focus lives in the bar, so CodeMirror drops .cm-focused and the selection
+   highlight fades — exactly the text the bar is about to rewrite. Hold it. */
+body.skillwright-bar-open .cm-editor .cm-selectionBackground {
+  background-color: var(--text-selection);
 }
 
 /* Obsidian's default modal is sized for settings forms, which is too narrow for

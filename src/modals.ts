@@ -11,76 +11,8 @@ import {
 import type { Skill } from "./skills";
 import type { ProviderId } from "./providers";
 import { renderSideBySideDiff } from "./diffview";
-import { matchSkills, resolveSkillToken, skillSlug, tokenAtCursor } from "./skillref";
-
-/** Rows shown in the `/` autocomplete before it starts scrolling. */
-const MAX_SUGGESTIONS = 8;
-
-/** Box and text metrics the caret mirror has to copy for its wrapping to match. */
-const MIRROR_PROPS = [
-  "boxSizing",
-  "width",
-  "paddingTop",
-  "paddingRight",
-  "paddingBottom",
-  "paddingLeft",
-  "borderTopWidth",
-  "borderRightWidth",
-  "borderBottomWidth",
-  "borderLeftWidth",
-  "fontFamily",
-  "fontSize",
-  "fontWeight",
-  "fontStyle",
-  "letterSpacing",
-  "lineHeight",
-  "textTransform",
-  "wordSpacing",
-  "textIndent",
-] as const;
-
-/**
- * Pixel position of a character offset inside a textarea, relative to the
- * element's own top-left corner.
- *
- * A textarea exposes no caret geometry, so this measures an off-screen div that
- * mirrors the element's box and text metrics with a zero-width marker at the
- * offset. The text after the marker is included so line wrapping matches.
- *
- * @param ta - the textarea to measure
- * @param index - character offset to locate
- * @returns caret left/top in pixels, plus the line height at that point
- */
-function caretCoords(
-  ta: HTMLTextAreaElement,
-  index: number
-): { left: number; top: number; height: number } {
-  const cs = window.getComputedStyle(ta);
-  const mirror = document.body.createDiv();
-  const style = mirror.style as unknown as Record<string, string>;
-  const computed = cs as unknown as Record<string, string>;
-  for (const p of MIRROR_PROPS) style[p] = computed[p];
-  style.position = "absolute";
-  style.top = "0";
-  style.left = "-9999px";
-  style.visibility = "hidden";
-  style.height = "auto";
-  style.whiteSpace = "pre-wrap";
-  style.overflowWrap = "break-word";
-
-  mirror.setText(ta.value.slice(0, index));
-  // Zero-width space: occupies a line box to measure, but no horizontal room,
-  // so it can't shift the very position it is measuring.
-  const marker = mirror.createSpan({ text: "​" });
-  mirror.createSpan({ text: ta.value.slice(index) });
-
-  const left = marker.offsetLeft;
-  const top = marker.offsetTop;
-  const height = marker.offsetHeight || parseFloat(cs.lineHeight) || 16;
-  mirror.remove();
-
-  return { left: left - ta.scrollLeft, top: top - ta.scrollTop, height };
-}
+import { resolveSkillToken } from "./skillref";
+import { SkillSuggest } from "./suggest";
 
 const PROVIDER_LABELS: Record<ProviderId, string> = {
   ollama: "Ollama",
@@ -114,16 +46,8 @@ export class RewriteModal extends Modal {
   private infoButton: ExtraButtonComponent | null = null;
   private skillDropdown: DropdownComponent | null = null;
   private inputEl: HTMLTextAreaElement | null = null;
-  private suggestEl: HTMLElement | null = null;
+  private suggest: SkillSuggest | null = null;
   private modelInput: TextComponent | null = null;
-
-  /** Skills currently listed in the popup; empty means the popup is closed. */
-  private suggestions: Skill[] = [];
-  private activeIndex = 0;
-  /** Offset of the `/` the popup is anchored to. */
-  private tokenStart = 0;
-  /** True when the current selection came from a `/token`, so deleting it clears. */
-  private skillFromText = false;
 
   constructor(
     app: App,
@@ -161,17 +85,15 @@ export class RewriteModal extends Modal {
         const wrap = ta.inputEl.parentElement?.createDiv({ cls: "skillwright-instruction-wrap" });
         if (wrap) {
           wrap.appendChild(ta.inputEl);
-          this.suggestEl = wrap.createDiv({ cls: "skillwright-suggest" });
-          this.suggestEl.hide();
+          this.suggest = new SkillSuggest(wrap, ta.inputEl, this.skills, (skill) =>
+            this.setSkill(skill, "text")
+          );
+          this.suggest.attach();
         }
 
         window.setTimeout(() => ta.inputEl.focus(), 0);
-        for (const ev of ["input", "keyup", "click"] as const) {
-          ta.inputEl.addEventListener(ev, () => this.syncFromText());
-        }
+        ta.inputEl.addEventListener("input", () => (this.instruction = ta.inputEl.value));
         ta.inputEl.addEventListener("keydown", (e) => this.onInputKeydown(e));
-        // Deferred so a mousedown on a suggestion row still lands first.
-        ta.inputEl.addEventListener("blur", () => window.setTimeout(() => this.closeSuggest(), 100));
       });
 
     // The description lives behind this button rather than inline: as a live
@@ -242,113 +164,13 @@ export class RewriteModal extends Modal {
    */
   private setSkill(skill: Skill | null, source: "text" | "dropdown"): void {
     this.selectedSkill = skill;
-    this.skillFromText = source === "text" && skill !== null;
     this.infoButton?.setDisabled(!skill);
     this.infoButton?.setTooltip(skill ? `About "${skill.name}"` : "Show skill description");
+    if (source === "dropdown") this.suggest?.markExternalSelection();
     if (source === "text") {
       const i = skill ? this.skills.indexOf(skill) : -1;
       this.skillDropdown?.setValue(i >= 0 ? String(i) : "");
     }
-  }
-
-  /** Re-reads the textarea after any edit: resolves `/tokens`, repaints the popup. */
-  private syncFromText(): void {
-    const el = this.inputEl;
-    if (!el) return;
-    this.instruction = el.value;
-
-    const { skill } = resolveSkillToken(el.value, this.skills);
-    if (skill) this.setSkill(skill, "text");
-    // Deleting the token clears it, but a dropdown pick must survive typing.
-    else if (this.skillFromText) this.setSkill(null, "text");
-
-    const token = tokenAtCursor(el.value, el.selectionStart);
-    if (!token) {
-      this.closeSuggest();
-      return;
-    }
-    this.tokenStart = token.start;
-    this.openSuggest(matchSkills(token.query, this.skills).slice(0, MAX_SUGGESTIONS));
-  }
-
-  private openSuggest(matches: Skill[]): void {
-    const box = this.suggestEl;
-    if (!box) return;
-    if (!matches.length) {
-      this.closeSuggest();
-      return;
-    }
-
-    this.suggestions = matches;
-    this.activeIndex = Math.min(this.activeIndex, matches.length - 1);
-    box.empty();
-    matches.forEach((s, i) => {
-      const row = box.createDiv({ cls: "skillwright-suggest-item" });
-      row.toggleClass("is-active", i === this.activeIndex);
-      row.createDiv({ cls: "skillwright-suggest-name", text: skillSlug(s.name) });
-      if (s.description) {
-        row.createDiv({ cls: "skillwright-suggest-desc", text: s.description });
-      }
-      // mousedown, not click: the textarea's blur would close the popup first.
-      row.addEventListener("mousedown", (e) => {
-        e.preventDefault();
-        this.acceptSuggestion(i);
-      });
-    });
-    box.show();
-    this.positionSuggest();
-  }
-
-  /**
-   * Anchors the popup under the `/` that opened it. Measured after the rows are
-   * in the DOM, so the box's own width is known and can be clamped against the
-   * textarea's right edge instead of spilling out of the modal.
-   */
-  private positionSuggest(): void {
-    const el = this.inputEl;
-    const box = this.suggestEl;
-    if (!el || !box) return;
-
-    const { left, top, height } = caretCoords(el, this.tokenStart);
-    const maxLeft = Math.max(0, el.offsetWidth - box.offsetWidth);
-    box.style.left = `${el.offsetLeft + Math.min(Math.max(left, 0), maxLeft)}px`;
-    box.style.top = `${el.offsetTop + top + height + 4}px`;
-  }
-
-  private closeSuggest(): void {
-    this.suggestions = [];
-    this.activeIndex = 0;
-    this.suggestEl?.hide();
-  }
-
-  private moveActive(delta: number): void {
-    const n = this.suggestions.length;
-    if (!n) return;
-    this.activeIndex = (this.activeIndex + delta + n) % n;
-    this.openSuggest(this.suggestions);
-  }
-
-  /** Splices `/<slug> ` over the token under the caret. */
-  private acceptSuggestion(index: number): void {
-    const el = this.inputEl;
-    const skill = this.suggestions[index];
-    if (!el || !skill) return;
-
-    const token = tokenAtCursor(el.value, el.selectionStart);
-    if (!token) {
-      this.closeSuggest();
-      return;
-    }
-
-    const insert = `/${skillSlug(skill.name)} `;
-    el.value = el.value.slice(0, token.start) + insert + el.value.slice(token.end);
-    const caret = token.start + insert.length;
-    el.setSelectionRange(caret, caret);
-    this.instruction = el.value;
-
-    this.closeSuggest();
-    this.setSkill(skill, "text");
-    el.focus();
   }
 
   private onInputKeydown(e: KeyboardEvent): void {
@@ -356,29 +178,7 @@ export class RewriteModal extends Modal {
       this.submit();
       return;
     }
-    if (!this.suggestions.length) return;
-
-    switch (e.key) {
-      case "ArrowDown":
-        e.preventDefault();
-        this.moveActive(1);
-        break;
-      case "ArrowUp":
-        e.preventDefault();
-        this.moveActive(-1);
-        break;
-      case "Enter":
-      case "Tab":
-        e.preventDefault();
-        this.acceptSuggestion(this.activeIndex);
-        break;
-      case "Escape":
-        // Stop it reaching Obsidian's modal scope, which would close the dialog.
-        e.preventDefault();
-        e.stopPropagation();
-        this.closeSuggest();
-        break;
-    }
+    this.suggest?.handleKeydown(e);
   }
 
   private submit(): void {
@@ -403,6 +203,8 @@ export class RewriteModal extends Modal {
   }
 
   onClose(): void {
+    this.suggest?.destroy();
+    this.suggest = null;
     this.contentEl.empty();
   }
 }

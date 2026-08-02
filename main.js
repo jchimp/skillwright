@@ -2731,7 +2731,7 @@ __export(main_exports, {
   default: () => SkillwrightPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian8 = require("obsidian");
+var import_obsidian9 = require("obsidian");
 
 // src/providers.ts
 var import_obsidian = require("obsidian");
@@ -3957,7 +3957,7 @@ function renderSideBySideDiff(parent, original, revised) {
   }
 }
 
-// src/modals.ts
+// src/suggest.ts
 var MAX_SUGGESTIONS = 8;
 var MIRROR_PROPS = [
   "boxSizing",
@@ -3980,8 +3980,8 @@ var MIRROR_PROPS = [
   "wordSpacing",
   "textIndent"
 ];
-function caretCoords(ta, index) {
-  const cs = window.getComputedStyle(ta);
+function caretCoords(el, index) {
+  const cs = window.getComputedStyle(el);
   const mirror = document.body.createDiv();
   const style = mirror.style;
   const computed = cs;
@@ -3994,15 +3994,192 @@ function caretCoords(ta, index) {
   style.height = "auto";
   style.whiteSpace = "pre-wrap";
   style.overflowWrap = "break-word";
-  mirror.setText(ta.value.slice(0, index));
+  mirror.setText(el.value.slice(0, index));
   const marker = mirror.createSpan({ text: "\u200B" });
-  mirror.createSpan({ text: ta.value.slice(index) });
+  mirror.createSpan({ text: el.value.slice(index) });
   const left = marker.offsetLeft;
   const top = marker.offsetTop;
   const height = marker.offsetHeight || parseFloat(cs.lineHeight) || 16;
   mirror.remove();
-  return { left: left - ta.scrollLeft, top: top - ta.scrollTop, height };
+  return { left: left - el.scrollLeft, top: top - el.scrollTop, height };
 }
+var SkillSuggest = class {
+  /**
+   * @param host - element the popup is positioned inside; must be `position: relative`
+   * @param input - the field to watch
+   * @param skills - candidate skills
+   * @param onPick - called whenever the resolved skill changes, with null when it clears
+   */
+  constructor(host, input, skills, onPick) {
+    /** Skills currently listed in the popup; empty means the popup is closed. */
+    this.suggestions = [];
+    this.activeIndex = 0;
+    /** Offset of the `/` the popup is anchored to. */
+    this.tokenStart = 0;
+    /** True when the current selection came from a `/token`, so deleting it clears. */
+    this.fromText = false;
+    this.listeners = [];
+    this.destroyed = false;
+    this.input = input;
+    this.skills = skills;
+    this.onPick = onPick;
+    this.box = host.createDiv({ cls: "skillwright-suggest" });
+    this.box.hide();
+  }
+  /** True while the popup is showing, so a host can decide whether Escape is its own. */
+  get isOpen() {
+    return this.suggestions.length > 0;
+  }
+  /** Wires the field listeners. Call once, after construction. */
+  attach() {
+    const sync = () => this.syncFromText();
+    for (const ev of ["input", "keyup", "click"]) {
+      this.input.addEventListener(ev, sync);
+      this.listeners.push(() => this.input.removeEventListener(ev, sync));
+    }
+    const blur = () => window.setTimeout(() => this.close(), 100);
+    this.input.addEventListener("blur", blur);
+    this.listeners.push(() => this.input.removeEventListener("blur", blur));
+  }
+  /**
+   * Offers a keystroke to the popup before the host handles it.
+   *
+   * @param e - the field's keydown event
+   * @returns true if the popup consumed the key, in which case the host must not act on it
+   */
+  handleKeydown(e) {
+    if (!this.suggestions.length)
+      return false;
+    switch (e.key) {
+      case "ArrowDown":
+        e.preventDefault();
+        this.moveActive(1);
+        return true;
+      case "ArrowUp":
+        e.preventDefault();
+        this.moveActive(-1);
+        return true;
+      case "Enter":
+      case "Tab":
+        e.preventDefault();
+        this.accept(this.activeIndex);
+        return true;
+      case "Escape":
+        e.preventDefault();
+        e.stopPropagation();
+        this.close();
+        return true;
+      default:
+        return false;
+    }
+  }
+  /** Re-reads the field after any edit: resolves `/tokens`, repaints the popup. */
+  syncFromText() {
+    const { skill } = resolveSkillToken(this.input.value, this.skills);
+    if (skill) {
+      this.fromText = true;
+      this.onPick(skill);
+    } else if (this.fromText) {
+      this.fromText = false;
+      this.onPick(null);
+    }
+    const token = tokenAtCursor(this.input.value, this.input.selectionStart ?? 0);
+    if (!token) {
+      this.close();
+      return;
+    }
+    this.tokenStart = token.start;
+    this.open(matchSkills(token.query, this.skills).slice(0, MAX_SUGGESTIONS));
+  }
+  /**
+   * Tells the popup that the skill was chosen somewhere else — a dropdown, say.
+   * Without this it still believes it owns the selection, and the next edit that
+   * leaves no `/token` behind would clear a pick it never made.
+   */
+  markExternalSelection() {
+    this.fromText = false;
+  }
+  /** Hides the popup without touching the field or the selected skill. */
+  close() {
+    if (this.destroyed)
+      return;
+    this.suggestions = [];
+    this.activeIndex = 0;
+    this.box.hide();
+  }
+  /** Detaches every listener and removes the popup element. */
+  destroy() {
+    this.destroyed = true;
+    for (const off of this.listeners)
+      off();
+    this.listeners = [];
+    this.box.remove();
+  }
+  open(matches) {
+    if (!matches.length) {
+      this.close();
+      return;
+    }
+    this.suggestions = matches;
+    this.activeIndex = Math.min(this.activeIndex, matches.length - 1);
+    this.box.empty();
+    matches.forEach((s, i) => {
+      const row = this.box.createDiv({ cls: "skillwright-suggest-item" });
+      row.toggleClass("is-active", i === this.activeIndex);
+      row.createDiv({ cls: "skillwright-suggest-name", text: skillSlug(s.name) });
+      if (s.description) {
+        row.createDiv({ cls: "skillwright-suggest-desc", text: s.description });
+      }
+      row.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        this.accept(i);
+      });
+    });
+    this.box.show();
+    this.position();
+  }
+  /**
+   * Anchors the popup under the `/` that opened it. Measured after the rows are
+   * in the DOM, so the box's own width is known and can be clamped against the
+   * field's right edge instead of spilling out of its container.
+   */
+  position() {
+    const el = this.input;
+    const { left, top, height } = caretCoords(el, this.tokenStart);
+    const maxLeft = Math.max(0, el.offsetWidth - this.box.offsetWidth);
+    this.box.style.left = `${el.offsetLeft + Math.min(Math.max(left, 0), maxLeft)}px`;
+    this.box.style.top = `${el.offsetTop + top + height + 4}px`;
+  }
+  moveActive(delta) {
+    const n = this.suggestions.length;
+    if (!n)
+      return;
+    this.activeIndex = (this.activeIndex + delta + n) % n;
+    this.open(this.suggestions);
+  }
+  /** Splices `/<slug> ` over the token under the caret. */
+  accept(index) {
+    const el = this.input;
+    const skill = this.suggestions[index];
+    if (!skill)
+      return;
+    const token = tokenAtCursor(el.value, el.selectionStart ?? 0);
+    if (!token) {
+      this.close();
+      return;
+    }
+    const insert = `/${skillSlug(skill.name)} `;
+    el.value = el.value.slice(0, token.start) + insert + el.value.slice(token.end);
+    const caret = token.start + insert.length;
+    el.setSelectionRange(caret, caret);
+    this.close();
+    this.fromText = true;
+    this.onPick(skill);
+    el.focus();
+  }
+};
+
+// src/modals.ts
 var PROVIDER_LABELS = {
   ollama: "Ollama",
   openai: "OpenAI",
@@ -4018,15 +4195,8 @@ var RewriteModal = class extends import_obsidian5.Modal {
     this.infoButton = null;
     this.skillDropdown = null;
     this.inputEl = null;
-    this.suggestEl = null;
+    this.suggest = null;
     this.modelInput = null;
-    /** Skills currently listed in the popup; empty means the popup is closed. */
-    this.suggestions = [];
-    this.activeIndex = 0;
-    /** Offset of the `/` the popup is anchored to. */
-    this.tokenStart = 0;
-    /** True when the current selection came from a `/token`, so deleting it clears. */
-    this.skillFromText = false;
     this.skills = skills;
     this.defaults = defaults;
     this.provider = defaults.provider;
@@ -4045,15 +4215,17 @@ var RewriteModal = class extends import_obsidian5.Modal {
       const wrap = ta.inputEl.parentElement?.createDiv({ cls: "skillwright-instruction-wrap" });
       if (wrap) {
         wrap.appendChild(ta.inputEl);
-        this.suggestEl = wrap.createDiv({ cls: "skillwright-suggest" });
-        this.suggestEl.hide();
+        this.suggest = new SkillSuggest(
+          wrap,
+          ta.inputEl,
+          this.skills,
+          (skill) => this.setSkill(skill, "text")
+        );
+        this.suggest.attach();
       }
       window.setTimeout(() => ta.inputEl.focus(), 0);
-      for (const ev of ["input", "keyup", "click"]) {
-        ta.inputEl.addEventListener(ev, () => this.syncFromText());
-      }
+      ta.inputEl.addEventListener("input", () => this.instruction = ta.inputEl.value);
       ta.inputEl.addEventListener("keydown", (e) => this.onInputKeydown(e));
-      ta.inputEl.addEventListener("blur", () => window.setTimeout(() => this.closeSuggest(), 100));
     });
     new import_obsidian5.Setting(contentEl).setName("Skill").setDesc("Optional. Loaded from your skills folder.").addExtraButton((b) => {
       this.infoButton = b;
@@ -4104,133 +4276,21 @@ var RewriteModal = class extends import_obsidian5.Modal {
    */
   setSkill(skill, source) {
     this.selectedSkill = skill;
-    this.skillFromText = source === "text" && skill !== null;
     this.infoButton?.setDisabled(!skill);
     this.infoButton?.setTooltip(skill ? `About "${skill.name}"` : "Show skill description");
+    if (source === "dropdown")
+      this.suggest?.markExternalSelection();
     if (source === "text") {
       const i = skill ? this.skills.indexOf(skill) : -1;
       this.skillDropdown?.setValue(i >= 0 ? String(i) : "");
     }
-  }
-  /** Re-reads the textarea after any edit: resolves `/tokens`, repaints the popup. */
-  syncFromText() {
-    const el = this.inputEl;
-    if (!el)
-      return;
-    this.instruction = el.value;
-    const { skill } = resolveSkillToken(el.value, this.skills);
-    if (skill)
-      this.setSkill(skill, "text");
-    else if (this.skillFromText)
-      this.setSkill(null, "text");
-    const token = tokenAtCursor(el.value, el.selectionStart);
-    if (!token) {
-      this.closeSuggest();
-      return;
-    }
-    this.tokenStart = token.start;
-    this.openSuggest(matchSkills(token.query, this.skills).slice(0, MAX_SUGGESTIONS));
-  }
-  openSuggest(matches) {
-    const box = this.suggestEl;
-    if (!box)
-      return;
-    if (!matches.length) {
-      this.closeSuggest();
-      return;
-    }
-    this.suggestions = matches;
-    this.activeIndex = Math.min(this.activeIndex, matches.length - 1);
-    box.empty();
-    matches.forEach((s, i) => {
-      const row = box.createDiv({ cls: "skillwright-suggest-item" });
-      row.toggleClass("is-active", i === this.activeIndex);
-      row.createDiv({ cls: "skillwright-suggest-name", text: skillSlug(s.name) });
-      if (s.description) {
-        row.createDiv({ cls: "skillwright-suggest-desc", text: s.description });
-      }
-      row.addEventListener("mousedown", (e) => {
-        e.preventDefault();
-        this.acceptSuggestion(i);
-      });
-    });
-    box.show();
-    this.positionSuggest();
-  }
-  /**
-   * Anchors the popup under the `/` that opened it. Measured after the rows are
-   * in the DOM, so the box's own width is known and can be clamped against the
-   * textarea's right edge instead of spilling out of the modal.
-   */
-  positionSuggest() {
-    const el = this.inputEl;
-    const box = this.suggestEl;
-    if (!el || !box)
-      return;
-    const { left, top, height } = caretCoords(el, this.tokenStart);
-    const maxLeft = Math.max(0, el.offsetWidth - box.offsetWidth);
-    box.style.left = `${el.offsetLeft + Math.min(Math.max(left, 0), maxLeft)}px`;
-    box.style.top = `${el.offsetTop + top + height + 4}px`;
-  }
-  closeSuggest() {
-    this.suggestions = [];
-    this.activeIndex = 0;
-    this.suggestEl?.hide();
-  }
-  moveActive(delta) {
-    const n = this.suggestions.length;
-    if (!n)
-      return;
-    this.activeIndex = (this.activeIndex + delta + n) % n;
-    this.openSuggest(this.suggestions);
-  }
-  /** Splices `/<slug> ` over the token under the caret. */
-  acceptSuggestion(index) {
-    const el = this.inputEl;
-    const skill = this.suggestions[index];
-    if (!el || !skill)
-      return;
-    const token = tokenAtCursor(el.value, el.selectionStart);
-    if (!token) {
-      this.closeSuggest();
-      return;
-    }
-    const insert = `/${skillSlug(skill.name)} `;
-    el.value = el.value.slice(0, token.start) + insert + el.value.slice(token.end);
-    const caret = token.start + insert.length;
-    el.setSelectionRange(caret, caret);
-    this.instruction = el.value;
-    this.closeSuggest();
-    this.setSkill(skill, "text");
-    el.focus();
   }
   onInputKeydown(e) {
     if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
       this.submit();
       return;
     }
-    if (!this.suggestions.length)
-      return;
-    switch (e.key) {
-      case "ArrowDown":
-        e.preventDefault();
-        this.moveActive(1);
-        break;
-      case "ArrowUp":
-        e.preventDefault();
-        this.moveActive(-1);
-        break;
-      case "Enter":
-      case "Tab":
-        e.preventDefault();
-        this.acceptSuggestion(this.activeIndex);
-        break;
-      case "Escape":
-        e.preventDefault();
-        e.stopPropagation();
-        this.closeSuggest();
-        break;
-    }
+    this.suggest?.handleKeydown(e);
   }
   submit() {
     const text = this.inputEl?.value ?? this.instruction;
@@ -4251,6 +4311,8 @@ var RewriteModal = class extends import_obsidian5.Modal {
     });
   }
   onClose() {
+    this.suggest?.destroy();
+    this.suggest = null;
     this.contentEl.empty();
   }
 };
@@ -4467,11 +4529,151 @@ var ResultModal = class extends import_obsidian5.Modal {
   }
 };
 
+// src/inlinebar.ts
+var import_obsidian6 = require("obsidian");
+
+// src/editor-geometry.ts
+function cmView(editor) {
+  const cm = editor.cm;
+  if (!cm || typeof cm.coordsAtPos !== "function")
+    return null;
+  return cm;
+}
+function selectionAnchor(editor) {
+  const cm = cmView(editor);
+  if (!cm)
+    return null;
+  try {
+    const head = cm.coordsAtPos(editor.posToOffset(editor.getCursor("from")));
+    const tail = cm.coordsAtPos(editor.posToOffset(editor.getCursor("to")));
+    if (!head || !tail)
+      return null;
+    return { left: head.left, top: head.top, bottom: tail.bottom };
+  } catch {
+    return null;
+  }
+}
+
+// src/inlinebar.ts
+var OFFSET = 6;
+var MARGIN = 8;
+var BAR_OPEN_CLASS = "skillwright-bar-open";
+var InlineRewriteBar = class {
+  /**
+   * @param editor - editor holding the selection to anchor to
+   * @param opts - skills to autocomplete, the provider/model label, and the submit handler
+   */
+  constructor(editor, opts) {
+    this.selectedSkill = null;
+    this.detach = [];
+    this.closed = false;
+    this.editor = editor;
+    this.opts = opts;
+    this.el = document.body.createDiv({ cls: "skillwright-bar" });
+    const row = this.el.createDiv({ cls: "skillwright-bar-row" });
+    this.inputEl = row.createEl("input", { cls: "skillwright-bar-input", type: "text" });
+    this.inputEl.placeholder = "Rewrite\u2026  type / for a skill";
+    const accept = row.createEl("button", { cls: "skillwright-bar-accept mod-cta", text: "Accept" });
+    accept.addEventListener("click", () => this.submit());
+    const cancel = row.createEl("button", { cls: "skillwright-bar-cancel clickable-icon" });
+    (0, import_obsidian6.setIcon)(cancel, "x");
+    cancel.setAttr("aria-label", "Cancel (Esc)");
+    cancel.addEventListener("click", () => this.close());
+    this.el.createDiv({
+      cls: "skillwright-bar-meta",
+      text: `${opts.provider} \xB7 ${opts.model}`
+    });
+    this.suggest = new SkillSuggest(this.el, this.inputEl, opts.skills, (skill) => {
+      this.selectedSkill = skill;
+    });
+  }
+  /** Renders, positions, and focuses the bar. */
+  open() {
+    this.suggest.attach();
+    this.inputEl.addEventListener("keydown", (e) => this.onKeydown(e));
+    document.body.addClass(BAR_OPEN_CLASS);
+    this.reposition();
+    if (this.closed)
+      return;
+    this.inputEl.focus();
+    this.on(window, "scroll", () => this.reposition(), true);
+    this.on(window, "resize", () => this.reposition());
+    this.on(document, "pointerdown", (e) => {
+      if (!this.el.contains(e.target))
+        this.close();
+    });
+  }
+  /** Tears the bar down and hands focus back to the editor. */
+  close() {
+    if (this.closed)
+      return;
+    this.closed = true;
+    for (const off of this.detach)
+      off();
+    this.detach = [];
+    this.suggest.destroy();
+    this.el.remove();
+    document.body.removeClass(BAR_OPEN_CLASS);
+    this.editor.focus();
+  }
+  on(target, type, handler, capture = false) {
+    const fn = handler;
+    target.addEventListener(type, fn, capture);
+    this.detach.push(() => target.removeEventListener(type, fn, capture));
+  }
+  /**
+   * Re-anchors the bar under the selection. Closes instead if the selection can
+   * no longer be measured — scrolled out of the rendered range, or the editor
+   * went away — since a bar floating over unrelated text is worse than none.
+   */
+  reposition() {
+    const anchor = selectionAnchor(this.editor);
+    if (!anchor) {
+      this.close();
+      return;
+    }
+    const { offsetWidth: w, offsetHeight: h } = this.el;
+    const left = Math.min(Math.max(anchor.left, MARGIN), window.innerWidth - w - MARGIN);
+    let top = anchor.bottom + OFFSET;
+    if (top + h > window.innerHeight - MARGIN)
+      top = anchor.top - h - OFFSET;
+    this.el.style.left = `${Math.max(left, MARGIN)}px`;
+    this.el.style.top = `${Math.max(top, MARGIN)}px`;
+  }
+  onKeydown(e) {
+    if (this.suggest.handleKeydown(e))
+      return;
+    if (e.key === "Enter") {
+      e.preventDefault();
+      this.submit();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      this.close();
+    }
+  }
+  submit() {
+    const { skill, cleaned } = resolveSkillToken(this.inputEl.value, this.opts.skills);
+    const chosen = skill ?? this.selectedSkill;
+    const instruction = cleaned.trim();
+    if (!chosen && !instruction) {
+      new import_obsidian6.Notice("Pick a skill or type an instruction.");
+      return;
+    }
+    this.close();
+    this.opts.onSubmit({
+      skill: chosen,
+      instruction,
+      provider: this.opts.provider,
+      model: this.opts.model
+    });
+  }
+};
+
 // src/settings.ts
-var import_obsidian7 = require("obsidian");
+var import_obsidian8 = require("obsidian");
 
 // src/obsidian-internal.ts
-var import_obsidian6 = require("obsidian");
+var import_obsidian7 = require("obsidian");
 function internals(app) {
   return app;
 }
@@ -4517,7 +4719,7 @@ var PC_NAMES = {
 };
 function formatHotkey(hk) {
   const key = hk.key.length === 1 ? hk.key.toUpperCase() : hk.key;
-  if (import_obsidian6.Platform.isMacOS) {
+  if (import_obsidian7.Platform.isMacOS) {
     return hk.modifiers.map((m) => MAC_GLYPHS[m] ?? m).join("") + key;
   }
   return [...hk.modifiers.map((m) => PC_NAMES[m] ?? m), key].join(" + ");
@@ -4526,6 +4728,7 @@ function formatHotkey(hk) {
 // src/settings.ts
 var DEFAULT_SETTINGS = {
   defaultProvider: "ollama",
+  promptUi: "inline",
   skillsFolder: "_skills",
   includeAgentSkillFolders: true,
   extraSkillFolders: "",
@@ -4536,7 +4739,7 @@ var DEFAULT_SETTINGS = {
   openai: { baseUrl: "https://api.openai.com", apiKey: "", model: "gpt-4o-mini" },
   anthropic: { baseUrl: "https://api.anthropic.com", apiKey: "", model: "claude-sonnet-4-6" }
 };
-var SkillwrightSettingTab = class extends import_obsidian7.PluginSettingTab {
+var SkillwrightSettingTab = class extends import_obsidian8.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -4545,7 +4748,7 @@ var SkillwrightSettingTab = class extends import_obsidian7.PluginSettingTab {
     const { containerEl } = this;
     const s = this.plugin.settings;
     containerEl.empty();
-    new import_obsidian7.Setting(containerEl).setName("Default provider").addDropdown((dd) => {
+    new import_obsidian8.Setting(containerEl).setName("Default provider").addDropdown((dd) => {
       dd.addOption("ollama", "Ollama");
       dd.addOption("openai", "OpenAI");
       dd.addOption("anthropic", "Anthropic");
@@ -4555,8 +4758,19 @@ var SkillwrightSettingTab = class extends import_obsidian7.PluginSettingTab {
         await this.plugin.saveSettings();
       });
     });
+    new import_obsidian8.Setting(containerEl).setName("Prompt style").setDesc(
+      'How "Rewrite selection\u2026" asks for an instruction. "Rewrite selection (all options)\u2026" always opens the dialog.'
+    ).addDropdown((dd) => {
+      dd.addOption("inline", "Inline bar (compact, at the selection)");
+      dd.addOption("modal", "Dialog (all options)");
+      dd.setValue(s.promptUi);
+      dd.onChange(async (v) => {
+        s.promptUi = v;
+        await this.plugin.saveSettings();
+      });
+    });
     containerEl.createEl("h3", { text: "Skill sources" });
-    new import_obsidian7.Setting(containerEl).setName("Skills folder").setDesc(
+    new import_obsidian8.Setting(containerEl).setName("Skills folder").setDesc(
       'Vault folder containing Claude Code-style skills (subfolders with SKILL.md). Skills here shadow same-named skills from the folders below, and "Import skills from zip\u2026" writes here \u2014 but skills you already have on disk need no import.'
     ).addText(
       (t) => t.setValue(s.skillsFolder).onChange(async (v) => {
@@ -4564,7 +4778,7 @@ var SkillwrightSettingTab = class extends import_obsidian7.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian7.Setting(containerEl).setName("Include agent skill folders").setDesc(
+    new import_obsidian8.Setting(containerEl).setName("Include agent skill folders").setDesc(
       "Read ~/.claude/skills and ~/.codex/skills in place, no import needed. Desktop only."
     ).addToggle(
       (t) => t.setValue(s.includeAgentSkillFolders).onChange(async (v) => {
@@ -4572,7 +4786,7 @@ var SkillwrightSettingTab = class extends import_obsidian7.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian7.Setting(containerEl).setName("Extra skill folders").setDesc(
+    new import_obsidian8.Setting(containerEl).setName("Extra skill folders").setDesc(
       "One folder per line, read in place. Absolute paths, `~` allowed; lines starting with # are ignored. Desktop only."
     ).addTextArea((t) => {
       t.inputEl.rows = 4;
@@ -4582,7 +4796,7 @@ var SkillwrightSettingTab = class extends import_obsidian7.PluginSettingTab {
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian7.Setting(containerEl).setName("Reference budget (characters)").setDesc(
+    new import_obsidian8.Setting(containerEl).setName("Reference budget (characters)").setDesc(
       "Cap on the reference files a skill pulls into the prompt. Files past the cap are skipped, with a notice."
     ).addText(
       (t) => t.setValue(String(s.refBudgetChars)).onChange(async (v) => {
@@ -4593,7 +4807,7 @@ var SkillwrightSettingTab = class extends import_obsidian7.PluginSettingTab {
       })
     );
     containerEl.createEl("h3", { text: "Generation" });
-    new import_obsidian7.Setting(containerEl).setName("Temperature").addText(
+    new import_obsidian8.Setting(containerEl).setName("Temperature").addText(
       (t) => t.setValue(String(s.temperature)).onChange(async (v) => {
         const n = Number(v);
         if (!Number.isNaN(n))
@@ -4601,7 +4815,7 @@ var SkillwrightSettingTab = class extends import_obsidian7.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian7.Setting(containerEl).setName("Max output tokens").addText(
+    new import_obsidian8.Setting(containerEl).setName("Max output tokens").addText(
       (t) => t.setValue(String(s.maxTokens)).onChange(async (v) => {
         const n = parseInt(v, 10);
         if (!Number.isNaN(n) && n > 0)
@@ -4610,53 +4824,53 @@ var SkillwrightSettingTab = class extends import_obsidian7.PluginSettingTab {
       })
     );
     containerEl.createEl("h3", { text: "Ollama" });
-    new import_obsidian7.Setting(containerEl).setName("Base URL").addText(
+    new import_obsidian8.Setting(containerEl).setName("Base URL").addText(
       (t) => t.setValue(s.ollama.baseUrl).onChange(async (v) => {
         s.ollama.baseUrl = v.trim();
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian7.Setting(containerEl).setName("Model").addText(
+    new import_obsidian8.Setting(containerEl).setName("Model").addText(
       (t) => t.setValue(s.ollama.model).onChange(async (v) => {
         s.ollama.model = v.trim();
         await this.plugin.saveSettings();
       })
     );
     containerEl.createEl("h3", { text: "OpenAI" });
-    new import_obsidian7.Setting(containerEl).setName("API key").setDesc("Stored in plain text in this vault's plugin data. Don't sync it anywhere you don't trust.").addText((t) => {
+    new import_obsidian8.Setting(containerEl).setName("API key").setDesc("Stored in plain text in this vault's plugin data. Don't sync it anywhere you don't trust.").addText((t) => {
       t.inputEl.type = "password";
       t.setValue(s.openai.apiKey).onChange(async (v) => {
         s.openai.apiKey = v.trim();
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian7.Setting(containerEl).setName("Base URL").addText(
+    new import_obsidian8.Setting(containerEl).setName("Base URL").addText(
       (t) => t.setValue(s.openai.baseUrl).onChange(async (v) => {
         s.openai.baseUrl = v.trim();
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian7.Setting(containerEl).setName("Model").addText(
+    new import_obsidian8.Setting(containerEl).setName("Model").addText(
       (t) => t.setValue(s.openai.model).onChange(async (v) => {
         s.openai.model = v.trim();
         await this.plugin.saveSettings();
       })
     );
     containerEl.createEl("h3", { text: "Anthropic" });
-    new import_obsidian7.Setting(containerEl).setName("API key").setDesc("Stored in plain text in this vault's plugin data.").addText((t) => {
+    new import_obsidian8.Setting(containerEl).setName("API key").setDesc("Stored in plain text in this vault's plugin data.").addText((t) => {
       t.inputEl.type = "password";
       t.setValue(s.anthropic.apiKey).onChange(async (v) => {
         s.anthropic.apiKey = v.trim();
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian7.Setting(containerEl).setName("Base URL").addText(
+    new import_obsidian8.Setting(containerEl).setName("Base URL").addText(
       (t) => t.setValue(s.anthropic.baseUrl).onChange(async (v) => {
         s.anthropic.baseUrl = v.trim();
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian7.Setting(containerEl).setName("Model").addText(
+    new import_obsidian8.Setting(containerEl).setName("Model").addText(
       (t) => t.setValue(s.anthropic.model).onChange(async (v) => {
         s.anthropic.model = v.trim();
         await this.plugin.saveSettings();
@@ -4677,7 +4891,7 @@ var SkillwrightSettingTab = class extends import_obsidian7.PluginSettingTab {
     const hotkeys = getHotkeyManager(this.app);
     if (!cmds.length || !hotkeys) {
       this.addHotkeyPaneButton(
-        new import_obsidian7.Setting(containerEl).setDesc(
+        new import_obsidian8.Setting(containerEl).setDesc(
           'Assign keys under Settings \u2192 Hotkeys, searching for "Skillwright".'
         )
       );
@@ -4689,7 +4903,7 @@ var SkillwrightSettingTab = class extends import_obsidian7.PluginSettingTab {
       const isDefault = !custom?.length && !!bound?.length;
       const desc = bound?.length ? bound.map(formatHotkey).join(", ") + (isDefault ? " (default)" : "") : "Not set";
       this.addHotkeyPaneButton(
-        new import_obsidian7.Setting(containerEl).setName(stripPluginPrefix(cmd.name)).setDesc(desc)
+        new import_obsidian8.Setting(containerEl).setName(stripPluginPrefix(cmd.name)).setDesc(desc)
       );
     }
   }
@@ -4719,7 +4933,7 @@ var SYSTEM_BASE = [
   "no quotation marks around the result. Preserve markdown formatting unless the",
   "task says otherwise. Match the original's language unless asked to translate."
 ].join(" ");
-var SkillwrightPlugin = class extends import_obsidian8.Plugin {
+var SkillwrightPlugin = class extends import_obsidian9.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
@@ -4733,6 +4947,11 @@ var SkillwrightPlugin = class extends import_obsidian8.Plugin {
       editorCallback: (editor) => this.startRewrite(editor)
     });
     this.addCommand({
+      id: "rewrite-selection-options",
+      name: "Rewrite selection (all options)\u2026",
+      editorCallback: (editor) => this.startRewrite(editor, "modal")
+    });
+    this.addCommand({
       id: "import-skills-zip",
       name: "Import skills from zip\u2026",
       callback: () => this.pickAndImportZip()
@@ -4744,7 +4963,7 @@ var SkillwrightPlugin = class extends import_obsidian8.Plugin {
         const { skills, counts, shadowed } = await this.getSkills();
         if (!skills.length) {
           const where = counts.map((c) => c.label).join(", ");
-          new import_obsidian8.Notice(`No skills found in: ${where}.`, 8e3);
+          new import_obsidian9.Notice(`No skills found in: ${where}.`, 8e3);
           return;
         }
         const lines = [
@@ -4753,7 +4972,7 @@ var SkillwrightPlugin = class extends import_obsidian8.Plugin {
         ];
         if (shadowed.length)
           lines.push(`  shadowed: ${shadowed.join(", ")}`);
-        new import_obsidian8.Notice(lines.join("\n"), 1e4);
+        new import_obsidian9.Notice(lines.join("\n"), 1e4);
       }
     });
     this.registerEvent(
@@ -4797,67 +5016,93 @@ var SkillwrightPlugin = class extends import_obsidian8.Plugin {
     skills.sort((a, b) => a.name.localeCompare(b.name));
     return { skills, counts, shadowed };
   }
-  async startRewrite(editor) {
+  /**
+   * Collects an instruction for the current selection, then runs the rewrite.
+   *
+   * @param editor - editor holding the selection
+   * @param force - overrides the "Prompt style" setting; used by the
+   *   all-options command so the dialog is always reachable
+   */
+  async startRewrite(editor, force) {
     const selection = editor.getSelection();
     if (!selection) {
-      new import_obsidian8.Notice("Select some text first.");
+      new import_obsidian9.Notice("Select some text first.");
       return;
     }
     const { skills } = await this.getSkills();
     const s = this.settings;
-    const defaults = {
-      provider: s.defaultProvider,
-      models: {
-        ollama: s.ollama.model,
-        openai: s.openai.model,
-        anthropic: s.anthropic.model
-      }
-    };
-    new RewriteModal(this.app, skills, defaults, async (choice) => {
-      const provider = choice.provider;
-      const cfg = { ...s[provider] };
-      if (choice.model)
-        cfg.model = choice.model;
-      if (!cfg.model) {
-        new import_obsidian8.Notice(`No model configured for ${provider}.`);
-        return;
-      }
-      if (provider !== "ollama" && !("apiKey" in cfg && cfg.apiKey)) {
-        new import_obsidian8.Notice(`No API key configured for ${provider}.`);
-        return;
-      }
-      const { system, skipped, missing } = await this.buildSystem(choice.skill);
-      const user = this.buildUser(selection, choice.instruction, choice.skill);
-      if (skipped.length || missing.length) {
-        const warnings = [
-          skipped.length ? `${skipped.length} reference(s) over budget (${skipped.join(", ")})` : "",
-          missing.length ? `${missing.length} not found (${missing.join(", ")})` : ""
-        ].filter(Boolean);
-        new import_obsidian8.Notice(`Skillwright: ${warnings.join("; ")}.`, 8e3);
-      }
-      const runOnce = async (temperature) => {
-        const text = (await chat(
-          provider,
-          { baseUrl: cfg.baseUrl, apiKey: cfg.apiKey ?? "", model: cfg.model },
-          { system, user, temperature, maxTokens: s.maxTokens }
-        )).trim();
-        if (!text)
-          throw new Error("Empty response from model.");
-        return {
-          text,
-          meta: { provider, model: cfg.model, skill: choice.skill?.name ?? null, temperature }
-        };
+    const run = (choice) => this.runRewrite(editor, selection, choice);
+    const anchor = (force ?? s.promptUi) === "inline" ? selectionAnchor(editor) : null;
+    if (anchor) {
+      const provider = s.defaultProvider;
+      new InlineRewriteBar(editor, {
+        skills,
+        provider,
+        model: s[provider].model,
+        onSubmit: run
+      }).open();
+      return;
+    }
+    new RewriteModal(
+      this.app,
+      skills,
+      {
+        provider: s.defaultProvider,
+        models: {
+          ollama: s.ollama.model,
+          openai: s.openai.model,
+          anthropic: s.anthropic.model
+        }
+      },
+      run
+    ).open();
+  }
+  /** Builds the prompts, calls the provider, and hands the result to the review dialog. */
+  async runRewrite(editor, selection, choice) {
+    const s = this.settings;
+    const provider = choice.provider;
+    const cfg = { ...s[provider] };
+    if (choice.model)
+      cfg.model = choice.model;
+    if (!cfg.model) {
+      new import_obsidian9.Notice(`No model configured for ${provider}.`);
+      return;
+    }
+    if (provider !== "ollama" && !("apiKey" in cfg && cfg.apiKey)) {
+      new import_obsidian9.Notice(`No API key configured for ${provider}.`);
+      return;
+    }
+    const { system, skipped, missing } = await this.buildSystem(choice.skill);
+    const user = this.buildUser(selection, choice.instruction, choice.skill);
+    if (skipped.length || missing.length) {
+      const warnings = [
+        skipped.length ? `${skipped.length} reference(s) over budget (${skipped.join(", ")})` : "",
+        missing.length ? `${missing.length} not found (${missing.join(", ")})` : ""
+      ].filter(Boolean);
+      new import_obsidian9.Notice(`Skillwright: ${warnings.join("; ")}.`, 8e3);
+    }
+    const runOnce = async (temperature) => {
+      const text = (await chat(
+        provider,
+        { baseUrl: cfg.baseUrl, apiKey: cfg.apiKey ?? "", model: cfg.model },
+        { system, user, temperature, maxTokens: s.maxTokens }
+      )).trim();
+      if (!text)
+        throw new Error("Empty response from model.");
+      return {
+        text,
+        meta: { provider, model: cfg.model, skill: choice.skill?.name ?? null, temperature }
       };
-      const notice = new import_obsidian8.Notice(`Skillwright: asking ${provider} (${cfg.model})\u2026`, 0);
-      try {
-        const first = await runOnce(s.temperature);
-        notice.hide();
-        this.showResult(editor, selection, choice, first, runOnce);
-      } catch (e) {
-        notice.hide();
-        new import_obsidian8.Notice(`Skillwright error: ${e.message}`, 8e3);
-      }
-    }).open();
+    };
+    const notice = new import_obsidian9.Notice(`Skillwright: asking ${provider} (${cfg.model})\u2026`, 0);
+    try {
+      const first = await runOnce(s.temperature);
+      notice.hide();
+      this.showResult(editor, selection, choice, first, runOnce);
+    } catch (e) {
+      notice.hide();
+      new import_obsidian9.Notice(`Skillwright error: ${e.message}`, 8e3);
+    }
   }
   async buildSystem(skill) {
     if (!skill)
@@ -4913,7 +5158,7 @@ ${text}`, {
           }
           case "copy":
             await navigator.clipboard.writeText(text);
-            new import_obsidian8.Notice("Copied.");
+            new import_obsidian9.Notice("Copied.");
             break;
           case "dismiss":
             break;
@@ -4938,16 +5183,16 @@ ${text}`, {
         );
         const msg = `Imported ${written} file(s) into "${this.settings.skillsFolder}".`;
         if (rejected.length) {
-          new import_obsidian8.Notice(
+          new import_obsidian9.Notice(
             `${msg}
 Refused ${rejected.length} entr(y/ies) pointing outside it: ${rejected.join(", ")}`,
             15e3
           );
         } else {
-          new import_obsidian8.Notice(msg);
+          new import_obsidian9.Notice(msg);
         }
       } catch (e) {
-        new import_obsidian8.Notice(`Zip import failed: ${e.message}`, 8e3);
+        new import_obsidian9.Notice(`Zip import failed: ${e.message}`, 8e3);
       }
     };
     input.click();
