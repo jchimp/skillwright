@@ -1,7 +1,7 @@
 import { Editor, MarkdownView, Menu, Notice, Plugin } from "obsidian";
 import { chat, ProviderId } from "./providers";
 import { importSkillsZip, loadSkills, resolveSkillRefs, Skill } from "./skills";
-import { ResultModal, RewriteModal } from "./modals";
+import { ResultModal, RewriteModal, type ResultMeta } from "./modals";
 import { DEFAULT_SETTINGS, SkillwrightSettings, SkillwrightSettingTab } from "./settings";
 
 const SYSTEM_BASE = [
@@ -118,7 +118,11 @@ export default class SkillwrightPlugin extends Plugin {
           new Notice("Empty response from model.");
           return;
         }
-        this.showResult(editor, selection, result.trim(), choice);
+        this.showResult(editor, selection, result.trim(), choice, {
+          provider,
+          model: cfg.model,
+          skill: choice.skill?.name ?? null,
+        });
       } catch (e) {
         notice.hide();
         new Notice(`Skillwright error: ${(e as Error).message}`, 8000);
@@ -174,10 +178,11 @@ export default class SkillwrightPlugin extends Plugin {
     editor: Editor,
     original: string,
     result: string,
-    choice: { skill: Skill | null; instruction: string }
+    choice: { skill: Skill | null; instruction: string },
+    meta: ResultMeta
   ): void {
     const title = choice.skill ? `Result — ${choice.skill.name}` : "Result";
-    new ResultModal(this.app, title, original, result, async (action, text) => {
+    new ResultModal(this.app, title, original, result, meta, async (action, text) => {
       switch (action) {
         case "replace":
           editor.replaceSelection(text);

@@ -2,6 +2,12 @@ import { App, ButtonComponent, Modal, Notice, Setting } from "obsidian";
 import type { Skill } from "./skills";
 import type { ProviderId } from "./providers";
 
+const PROVIDER_LABELS: Record<ProviderId, string> = {
+  ollama: "Ollama",
+  openai: "OpenAI",
+  anthropic: "Anthropic",
+};
+
 export interface RewriteChoice {
   skill: Skill | null;
   instruction: string;
@@ -70,9 +76,7 @@ export class RewriteModal extends Modal {
     new Setting(contentEl)
       .setName("Provider / model")
       .addDropdown((dd) => {
-        dd.addOption("ollama", "Ollama");
-        dd.addOption("openai", "OpenAI");
-        dd.addOption("anthropic", "Anthropic");
+        for (const [id, label] of Object.entries(PROVIDER_LABELS)) dd.addOption(id, label);
         dd.setValue(this.provider);
         dd.onChange((v) => (this.provider = v as ProviderId));
       })
@@ -110,11 +114,19 @@ export class RewriteModal extends Modal {
 
 export type ResultAction = "replace" | "insert" | "copy" | "dismiss";
 
+/** What actually produced the result, shown back to the user for verification. */
+export interface ResultMeta {
+  provider: ProviderId;
+  model: string;
+  skill: string | null;
+}
+
 /** Shows original vs. result, editable, with Replace / Insert Below / Copy. */
 export class ResultModal extends Modal {
   private original: string;
   private result: string;
   private title: string;
+  private meta: ResultMeta;
   private onAction: (action: ResultAction, text: string) => void;
   private edited: string;
 
@@ -123,12 +135,14 @@ export class ResultModal extends Modal {
     title: string,
     original: string,
     result: string,
+    meta: ResultMeta,
     onAction: (action: ResultAction, text: string) => void
   ) {
     super(app);
     this.title = title;
     this.original = original;
     this.result = result;
+    this.meta = meta;
     this.edited = result;
     this.onAction = onAction;
   }
@@ -137,6 +151,16 @@ export class ResultModal extends Modal {
     const { contentEl } = this;
     contentEl.addClass("skillwright-modal", "skillwright-result");
     contentEl.createEl("h3", { text: this.title });
+
+    const meta = contentEl.createEl("div", { cls: "skillwright-meta" });
+    meta.createEl("span", {
+      text: `${PROVIDER_LABELS[this.meta.provider] ?? this.meta.provider} · ${this.meta.model}`,
+      cls: "skillwright-meta-item",
+    });
+    meta.createEl("span", {
+      text: this.meta.skill ? `Skill: ${this.meta.skill}` : "Skill: none (instruction only)",
+      cls: "skillwright-meta-item",
+    });
 
     contentEl.createEl("div", { text: "Original", cls: "skillwright-label" });
     contentEl.createEl("div", { text: this.original, cls: "skillwright-original" });
