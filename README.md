@@ -58,7 +58,7 @@ Resolution happens when you run a rewrite, not when the picker loads, so unused 
 
 Total reference size is capped by **Reference budget (characters)** in settings (default 40,000). Files past the cap are skipped whole and named in a notice; the request still goes out.
 
-**Zip import** (for skills you *don't* already have on disk — otherwise point Skillwright at the folder instead): command palette → *Skillwright: Import skills from zip*. Writes into the vault skills folder. Handles zips with skills at the root, under one wrapping directory (which is stripped), or a single skill zipped as its own folder (which is kept, so the skill stays in its own subfolder rather than being flattened into the skills folder).
+**Zip import** (for skills you *don't* already have on disk — otherwise point Skillwright at the folder instead): command palette → *Skillwright: Import skills from zip*. Writes into the vault skills folder. Handles zips with skills at the root, under one wrapping directory (which is stripped), or a single skill zipped as its own folder (which is kept, so the skill stays in its own subfolder rather than being flattened into the skills folder). Entries whose path lands outside the skills folder are refused and named in the notice — see [Security](#security).
 
 Two example skills are in `example-skills/` — copy them into your vault's skills folder to try it.
 
@@ -78,7 +78,35 @@ For development: symlink the repo into the plugins folder and use `npm run dev` 
 
 All three are bindable. Settings → Skillwright → **Hotkeys** lists them with their current bindings and a button that jumps straight to Obsidian's Hotkeys pane, pre-filtered to Skillwright.
 
+## Security
+
+### Where your API key lives
+
+`<vault>/.obsidian/plugins/skillwright/data.json`, **in plain text**. Obsidian gives plugins no keychain and no encrypted storage, so every plugin that talks to a paid API does this; anything a plugin could decrypt unattended wouldn't be protecting the key anyway. What matters is the three ways that file travels:
+
+- **Vault sync.** `.obsidian/` lives inside the vault, so Obsidian Sync, Dropbox, iCloud, and git all replicate it — including version history. Exclude `.obsidian/plugins/skillwright/data.json` if your vault is shared or backed up somewhere you don't control.
+- **Other plugins.** Obsidian has no isolation between plugins. Any other community plugin you install can read that file.
+- **Accidental commits.** Vaults kept in git routinely commit `.obsidian/`.
+
+If none of that is acceptable, **use Ollama** — it's the default provider and needs no credential at all. Otherwise use scoped, spend-capped, rotatable keys (OpenAI project keys, Anthropic workspace keys), so a leak is a chore rather than an incident.
+
+### What leaves your machine
+
+The selected passage, your instruction, the active skill's body, and any reference files it pulls in — sent to whichever provider you picked, nothing else. Skillwright makes no telemetry or update requests. With Ollama pointed at localhost, none of it leaves the machine.
+
+### The plugin can't act on model output
+
+There is no tool loop. The providers are plain chat completions, and Skillwright reads only the text out of the response — if a model tries to emit a tool call it's discarded, and you get an "Empty response from model" notice. Nothing in the response can write a file, run a command, or reach the network. The result is inert text: it's rendered as text in the preview (never as HTML), and it only touches your note when you click **Replace** or **Insert below**, after you've seen the diff.
+
+### Skills you didn't write
+
+A skill is instructions plus whatever files it references, and both go straight into the prompt. A skill from someone else can therefore reference *other* `.md` files inside your skill folders and have them inlined into the request to your provider. It **can't** read anything outside those folders — paths escaping the folder are rejected, symlinks pointing out of it aren't followed, and non-`.md` files are never read — but "inside those folders" is the boundary, not "inside that one skill". Two things follow:
+
+- Skim a skill from a stranger before running it, the same as any script.
+- Don't set **Skills folder** to your vault root, or that boundary becomes your entire vault.
+
+Zip import enforces the same containment: entries resolving outside the skills folder are refused and named in the import notice, so a zip that tries to overwrite plugin code or config can't.
+
 ## Notes / caveats
 
-- API keys are stored **in plain text** in `data.json` in the vault's plugin folder. Don't sync the vault anywhere untrusted, or use Ollama.
 - The modal's model field is pre-filled with the selected provider's configured model, and re-fills when you switch providers. Edit it to override for one rewrite; blank falls back to the settings default.
