@@ -2955,6 +2955,10 @@ async function resolveSkillRefs(skill, budgetChars) {
           continue;
         }
         let path = result.path;
+        if (skill.folder && !path.startsWith(`${skill.folder}/`)) {
+          reportMissing(target);
+          continue;
+        }
         if (visited.has(path))
           continue;
         visited.add(path);
@@ -3017,19 +3021,25 @@ async function importSkillsZip(app, skillsFolder, data) {
   const entries = Object.values(zip.files).filter((f) => !f.dir);
   if (entries.length === 0) {
     new import_obsidian2.Notice("Zip is empty.");
-    return 0;
+    return { written: 0, rejected: [] };
   }
   const tops = new Set(entries.map((e) => e.name.split("/")[0]));
   const top = [...tops][0];
   const topIsSkill = entries.some((e) => e.name.toLowerCase() === `${top.toLowerCase()}/skill.md`);
   const strip = tops.size === 1 && !topIsSkill && entries.every((e) => e.name.includes("/")) ? `${top}/` : "";
-  await ensureFolder(app, skillsFolder);
+  const root = (0, import_obsidian2.normalizePath)(skillsFolder);
+  await ensureFolder(app, root);
   let written = 0;
+  const rejected = [];
   for (const entry of entries) {
     const rel = entry.name.startsWith(strip) ? entry.name.slice(strip.length) : entry.name;
     if (!rel || rel.startsWith("__MACOSX") || rel.endsWith(".DS_Store"))
       continue;
-    const dest = (0, import_obsidian2.normalizePath)(`${skillsFolder}/${rel}`);
+    const dest = dropCurrentDirSegments((0, import_obsidian2.normalizePath)(`${root}/${rel}`));
+    if (!containedIn(root, dest)) {
+      rejected.push(entry.name);
+      continue;
+    }
     const destDir = dest.substring(0, dest.lastIndexOf("/"));
     if (destDir)
       await ensureFolder(app, destDir);
@@ -3042,7 +3052,17 @@ async function importSkillsZip(app, skillsFolder, data) {
     }
     written++;
   }
-  return written;
+  return { written, rejected };
+}
+function dropCurrentDirSegments(path) {
+  return path.split("/").filter((seg) => seg !== ".").join("/");
+}
+function containedIn(root, dest) {
+  if (dest.split("/").some((seg) => seg === ".."))
+    return false;
+  if (root === "/")
+    return dest !== "/";
+  return dest !== root && dest.startsWith(`${root}/`);
 }
 async function ensureFolder(app, path) {
   const p = (0, import_obsidian2.normalizePath)(path);
@@ -4911,8 +4931,21 @@ ${text}`, {
         return;
       try {
         const buf = await file.arrayBuffer();
-        const n = await importSkillsZip(this.app, this.settings.skillsFolder, buf);
-        new import_obsidian8.Notice(`Imported ${n} file(s) into "${this.settings.skillsFolder}".`);
+        const { written, rejected } = await importSkillsZip(
+          this.app,
+          this.settings.skillsFolder,
+          buf
+        );
+        const msg = `Imported ${written} file(s) into "${this.settings.skillsFolder}".`;
+        if (rejected.length) {
+          new import_obsidian8.Notice(
+            `${msg}
+Refused ${rejected.length} entr(y/ies) pointing outside it: ${rejected.join(", ")}`,
+            15e3
+          );
+        } else {
+          new import_obsidian8.Notice(msg);
+        }
       } catch (e) {
         new import_obsidian8.Notice(`Zip import failed: ${e.message}`, 8e3);
       }

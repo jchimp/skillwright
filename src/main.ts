@@ -263,8 +263,22 @@ export default class SkillwrightPlugin extends Plugin {
       if (!file) return;
       try {
         const buf = await file.arrayBuffer();
-        const n = await importSkillsZip(this.app, this.settings.skillsFolder, buf);
-        new Notice(`Imported ${n} file(s) into "${this.settings.skillsFolder}".`);
+        const { written, rejected } = await importSkillsZip(
+          this.app,
+          this.settings.skillsFolder,
+          buf
+        );
+        const msg = `Imported ${written} file(s) into "${this.settings.skillsFolder}".`;
+        if (rejected.length) {
+          // Named, not just counted: a zip that tries to write outside the skills
+          // folder is worth seeing rather than quietly importing minus a few files.
+          new Notice(
+            `${msg}\nRefused ${rejected.length} entr(y/ies) pointing outside it: ${rejected.join(", ")}`,
+            15000
+          );
+        } else {
+          new Notice(msg);
+        }
       } catch (e) {
         new Notice(`Zip import failed: ${(e as Error).message}`, 8000);
       }
