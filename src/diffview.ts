@@ -72,17 +72,37 @@ function buildRows(original: string, revised: string): Row[] {
   return rows;
 }
 
-/** Renders one line, highlighting only the words that differ from its counterpart. */
-function renderCellText(cell: HTMLElement, text: string, counterpart: string, side: "left" | "right"): void {
-  for (const part of diffWordsWithSpace(counterpart, text)) {
-    // On the left cell `text` is the *old* side, so the roles of added/removed invert.
-    const isChange = side === "right" ? part.added : part.removed;
-    const isOther = side === "right" ? part.removed : part.added;
-    if (isOther) continue;
-    cell.createEl("span", {
-      text: part.value,
-      cls: isChange ? (side === "right" ? "skillwright-ins" : "skillwright-del") : undefined,
-    });
+/**
+ * Fills both cells of a changed row from a single word diff.
+ *
+ * One shared walk rather than one diff per cell: each part belongs to the left
+ * unless it was added, and to the right unless it was removed, so neither side
+ * can drift out of the other's frame of reference.
+ *
+ * @param left - cell for the original line
+ * @param right - cell for the rewritten line
+ * @param oldText - the original line
+ * @param newText - the rewritten line
+ */
+function renderChangedRow(
+  left: HTMLElement,
+  right: HTMLElement,
+  oldText: string,
+  newText: string
+): void {
+  for (const part of diffWordsWithSpace(oldText, newText)) {
+    if (!part.added) {
+      left.createEl("span", {
+        text: part.value,
+        cls: part.removed ? "skillwright-del" : undefined,
+      });
+    }
+    if (!part.removed) {
+      right.createEl("span", {
+        text: part.value,
+        cls: part.added ? "skillwright-ins" : undefined,
+      });
+    }
   }
 }
 
@@ -133,8 +153,7 @@ export function renderSideBySideDiff(parent: HTMLElement, original: string, revi
     if (row.right === null) right.addClass("is-filler");
 
     if (row.kind === "changed") {
-      renderCellText(left, row.left as string, row.right as string, "left");
-      renderCellText(right, row.right as string, row.left as string, "right");
+      renderChangedRow(left, right, row.left as string, row.right as string);
     } else {
       if (row.left !== null) left.setText(row.left);
       if (row.right !== null) right.setText(row.right);
