@@ -17,12 +17,17 @@ Same layout as Claude Code skills, stored in a vault folder (default `_skills/`)
 ```
 _skills/
   lab-notes-voice/
-    SKILL.md        # frontmatter: name, description; body = instructions
+    SKILL.md          # frontmatter: name, description; body = instructions
+    ref-word-list.md  # referenced from SKILL.md, pulled into the prompt
   tighten/
     SKILL.md
 ```
 
 Frontmatter `name` and `description` populate the picker; the body is injected into the system prompt. Loose `_skills/foo.md` files also work for quick one-offs.
+
+**Reference files.** A `SKILL.md` that points at sibling files gets those files inlined into the system prompt, since the providers here have no tool loop and can't open anything themselves. Markdown links, wikilinks, and bare `some-file.md` mentions all count as references, and a reference file may itself reference one more (two hops from `SKILL.md`, then it stops). Only `.md` files inside the skills folder are read — external URLs and paths escaping the folder are ignored and reported. Resolution happens when you run a rewrite, not when the picker loads, so unused skills cost nothing.
+
+Total reference size is capped by **Reference budget (characters)** in settings (default 40,000). Files past the cap are skipped whole and named in a notice; the request still goes out.
 
 **Zip import:** command palette → *Skillwright: Import skills from zip*. Handles zips with skills at the root or under one wrapping directory.
 

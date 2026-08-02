@@ -1,6 +1,6 @@
 import { Editor, MarkdownView, Menu, Notice, Plugin } from "obsidian";
 import { chat, ProviderId } from "./providers";
-import { importSkillsZip, loadSkills, Skill } from "./skills";
+import { importSkillsZip, loadSkills, resolveSkillRefs, Skill } from "./skills";
 import { ResultModal, RewriteModal } from "./modals";
 import { DEFAULT_SETTINGS, SkillwrightSettings, SkillwrightSettingTab } from "./settings";
 
@@ -88,8 +88,18 @@ export default class SkillwrightPlugin extends Plugin {
         return;
       }
 
-      const system = this.buildSystem(choice.skill);
+      const { system, skipped, missing } = await this.buildSystem(choice.skill);
       const user = this.buildUser(selection, choice.instruction, choice.skill);
+
+      if (skipped.length || missing.length) {
+        const warnings = [
+          skipped.length
+            ? `${skipped.length} reference(s) over budget (${skipped.join(", ")})`
+            : "",
+          missing.length ? `${missing.length} not found (${missing.join(", ")})` : "",
+        ].filter(Boolean);
+        new Notice(`Skillwright: ${warnings.join("; ")}.`, 8000);
+      }
 
       const notice = new Notice(`Skillwright: asking ${provider} (${cfg.model})…`, 0);
       try {
@@ -116,16 +126,41 @@ export default class SkillwrightPlugin extends Plugin {
     }).open();
   }
 
-  private buildSystem(skill: Skill | null): string {
-    if (!skill) return SYSTEM_BASE;
-    return [
+  private async buildSystem(
+    skill: Skill | null
+  ): Promise<{ system: string; skipped: string[]; missing: string[] }> {
+    if (!skill) return { system: SYSTEM_BASE, skipped: [], missing: [] };
+
+    const { refs, skipped, missing } = await resolveSkillRefs(
+      this.app,
+      skill,
+      this.settings.skillsFolder,
+      this.settings.refBudgetChars
+    );
+
+    const parts = [
       SYSTEM_BASE,
       "",
       `## Active skill: ${skill.name}`,
       skill.description ? `(${skill.description})` : "",
+      `Skill folder: ${skill.folder}`,
       "",
       skill.body,
-    ].join("\n");
+    ];
+
+    if (refs.length) {
+      parts.push(
+        "",
+        "## Reference files",
+        "Files referenced by this skill are reproduced in full below. You have no file",
+        "access — do not ask for other files, and do not mention these paths in your output."
+      );
+      for (const ref of refs) {
+        parts.push("", `### ${ref.name}  (${ref.path})`, "", ref.body);
+      }
+    }
+
+    return { system: parts.join("\n"), skipped, missing };
   }
 
   private buildUser(selection: string, instruction: string, skill: Skill | null): string {
