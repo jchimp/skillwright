@@ -101,28 +101,25 @@ export default class SkillwrightPlugin extends Plugin {
         new Notice(`Skillwright: ${warnings.join("; ")}.`, 8000);
       }
 
+      // Closes over the original system/user built above, so Re-Run always re-rewrites
+      // the original passage rather than the most recent attempt's output.
+      const runOnce = async (): Promise<{ text: string; meta: ResultMeta }> => {
+        const text = (
+          await chat(
+            provider as ProviderId,
+            { baseUrl: cfg.baseUrl, apiKey: cfg.apiKey ?? "", model: cfg.model },
+            { system, user, temperature: s.temperature, maxTokens: s.maxTokens }
+          )
+        ).trim();
+        if (!text) throw new Error("Empty response from model.");
+        return { text, meta: { provider, model: cfg.model, skill: choice.skill?.name ?? null } };
+      };
+
       const notice = new Notice(`Skillwright: asking ${provider} (${cfg.model})…`, 0);
       try {
-        const result = await chat(provider as ProviderId, {
-          baseUrl: cfg.baseUrl,
-          apiKey: cfg.apiKey ?? "",
-          model: cfg.model,
-        }, {
-          system,
-          user,
-          temperature: s.temperature,
-          maxTokens: s.maxTokens,
-        });
+        const first = await runOnce();
         notice.hide();
-        if (!result.trim()) {
-          new Notice("Empty response from model.");
-          return;
-        }
-        this.showResult(editor, selection, result.trim(), choice, {
-          provider,
-          model: cfg.model,
-          skill: choice.skill?.name ?? null,
-        });
+        this.showResult(editor, selection, choice, first, runOnce);
       } catch (e) {
         notice.hide();
         new Notice(`Skillwright error: ${(e as Error).message}`, 8000);
@@ -177,28 +174,37 @@ export default class SkillwrightPlugin extends Plugin {
   private showResult(
     editor: Editor,
     original: string,
-    result: string,
     choice: { skill: Skill | null; instruction: string },
-    meta: ResultMeta
+    first: { text: string; meta: ResultMeta },
+    onRerun: () => Promise<{ text: string; meta: ResultMeta }>
   ): void {
     const title = choice.skill ? `Result — ${choice.skill.name}` : "Result";
-    new ResultModal(this.app, title, original, result, meta, async (action, text) => {
-      switch (action) {
-        case "replace":
-          editor.replaceSelection(text);
-          break;
-        case "insert": {
-          const to = editor.getCursor("to");
-          editor.replaceRange(`\n\n${text}`, { line: to.line, ch: editor.getLine(to.line).length });
-          break;
+    new ResultModal(this.app, {
+      title,
+      original,
+      first,
+      onRerun,
+      onAction: async (action, text) => {
+        switch (action) {
+          case "replace":
+            editor.replaceSelection(text);
+            break;
+          case "insert": {
+            const to = editor.getCursor("to");
+            editor.replaceRange(`\n\n${text}`, {
+              line: to.line,
+              ch: editor.getLine(to.line).length,
+            });
+            break;
+          }
+          case "copy":
+            await navigator.clipboard.writeText(text);
+            new Notice("Copied.");
+            break;
+          case "dismiss":
+            break;
         }
-        case "copy":
-          await navigator.clipboard.writeText(text);
-          new Notice("Copied.");
-          break;
-        case "dismiss":
-          break;
-      }
+      },
     }).open();
   }
 

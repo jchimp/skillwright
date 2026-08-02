@@ -8,6 +8,7 @@
     "build": "node esbuild.config.mjs production"
   },
   "devDependencies": {
+    "@types/diff": "^7.0.2",
     "@types/node": "^20.11.0",
     "builtin-modules": "^3.3.0",
     "esbuild": "^0.20.0",
@@ -15,6 +16,7 @@
     "typescript": "^5.4.0"
   },
   "dependencies": {
+    "diff": "^7.0.0",
     "jszip": "^3.10.1"
   }
 }

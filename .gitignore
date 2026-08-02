@@ -1,3 +1,6 @@
+# Claude files and plans
+.claude/
+
 # Dependencies
 node_modules/
 
