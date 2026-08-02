@@ -1,6 +1,8 @@
 import { Editor, MarkdownView, Menu, Notice, Plugin } from "obsidian";
 import { chat, ProviderId } from "./providers";
 import { importSkillsZip, loadSkills, resolveSkillRefs, Skill } from "./skills";
+import { skillSlug } from "./skillref";
+import { resolveStores } from "./store";
 import { ResultModal, RewriteModal, type ResultMeta } from "./modals";
 import { DEFAULT_SETTINGS, SkillwrightSettings, SkillwrightSettingTab } from "./settings";
 
@@ -35,12 +37,18 @@ export default class SkillwrightPlugin extends Plugin {
       id: "reload-skills",
       name: "List loaded skills",
       callback: async () => {
-        const skills = await this.getSkills();
-        new Notice(
-          skills.length
-            ? `${skills.length} skill(s): ${skills.map((s) => s.name).join(", ")}`
-            : `No skills found in "${this.settings.skillsFolder}".`
-        );
+        const { skills, counts, shadowed } = await this.getSkills();
+        if (!skills.length) {
+          const where = counts.map((c) => c.label).join(", ");
+          new Notice(`No skills found in: ${where}.`, 8000);
+          return;
+        }
+        const lines = [
+          `${skills.length} skill(s): ${skills.map((s) => s.name).join(", ")}`,
+          ...counts.map((c) => `  ${c.label}: ${c.count}`),
+        ];
+        if (shadowed.length) lines.push(`  shadowed: ${shadowed.join(", ")}`);
+        new Notice(lines.join("\n"), 10000);
       },
     });
 
@@ -57,8 +65,42 @@ export default class SkillwrightPlugin extends Plugin {
     );
   }
 
-  private async getSkills(): Promise<Skill[]> {
-    return loadSkills(this.app, this.settings.skillsFolder);
+  /**
+   * Loads skills from every configured source. Earlier stores win name collisions,
+   * so a vault skill shadows a same-named one on disk — and the slash-token
+   * resolver in skillref.ts never sees two skills with the same slug.
+   *
+   * @returns Merged skills sorted by name, plus what each source contributed.
+   */
+  private async getSkills(): Promise<{
+    skills: Skill[];
+    counts: Array<{ label: string; count: number }>;
+    shadowed: string[];
+  }> {
+    const stores = await resolveStores(this.app, this.settings);
+    const skills: Skill[] = [];
+    const counts: Array<{ label: string; count: number }> = [];
+    const shadowed: string[] = [];
+    const seen = new Set<string>();
+
+    for (const store of stores) {
+      const loaded = await loadSkills(store);
+      let kept = 0;
+      for (const skill of loaded) {
+        const slug = skillSlug(skill.name);
+        if (seen.has(slug)) {
+          shadowed.push(`${skill.name} (${store.label})`);
+          continue;
+        }
+        seen.add(slug);
+        skills.push(skill);
+        kept++;
+      }
+      counts.push({ label: store.label, count: kept });
+    }
+
+    skills.sort((a, b) => a.name.localeCompare(b.name));
+    return { skills, counts, shadowed };
   }
 
   private async startRewrite(editor: Editor): Promise<void> {
@@ -68,7 +110,7 @@ export default class SkillwrightPlugin extends Plugin {
       return;
     }
 
-    const skills = await this.getSkills();
+    const { skills } = await this.getSkills();
     const s = this.settings;
     const defaults = {
       provider: s.defaultProvider,
@@ -141,19 +183,14 @@ export default class SkillwrightPlugin extends Plugin {
   ): Promise<{ system: string; skipped: string[]; missing: string[] }> {
     if (!skill) return { system: SYSTEM_BASE, skipped: [], missing: [] };
 
-    const { refs, skipped, missing } = await resolveSkillRefs(
-      this.app,
-      skill,
-      this.settings.skillsFolder,
-      this.settings.refBudgetChars
-    );
+    const { refs, skipped, missing } = await resolveSkillRefs(skill, this.settings.refBudgetChars);
 
     const parts = [
       SYSTEM_BASE,
       "",
       `## Active skill: ${skill.name}`,
       skill.description ? `(${skill.description})` : "",
-      `Skill folder: ${skill.folder}`,
+      `Skill folder: ${skill.displayPath}`,
       "",
       skill.body,
     ];

@@ -27,6 +27,20 @@ _skills/
 
 Frontmatter `name` and `description` populate the picker; the body is injected into the system prompt. Loose `_skills/foo.md` files also work for quick one-offs.
 
+### Skill sources
+
+Skills are read from several places and merged into one picker:
+
+1. **The vault skills folder** — default `_skills/`, editable in Obsidian, synced with your vault.
+2. **Agent skill folders** — `~/.claude/skills` and `~/.codex/skills`, read **in place**. On by default (Settings → *Include agent skill folders*); skip it if you don't want them.
+3. **Extra skill folders** — any other folders, one absolute path per line in settings. `~` is expanded; lines starting with `#` are ignored.
+
+If you already have skills on disk for Claude Code or Codex, there is nothing to import — they show up in the picker as-is and stay in sync, because every rewrite re-reads them from disk.
+
+Sources are consulted in that order and the **first one wins a name collision**, so a vault skill shadows a same-named one on disk. *List loaded skills* reports the per-source counts and anything shadowed.
+
+External folders are **desktop only** (Obsidian on mobile has no filesystem access) and **read-only** — Skillwright never writes to them.
+
 ### How a skill becomes a prompt
 
 There is no tool loop here — the providers are plain chat completions, so anything the model needs has to be in the message it receives. A skill written for Claude Code assumes the opposite: it says "read `references/BRAND.md`" and trusts the agent to go open it. Skillwright closes that gap by resolving those paths itself and **embedding the referenced files directly into the system prompt** before the request goes out.
@@ -38,13 +52,13 @@ Path resolution:
 - Paths are resolved relative to the file doing the referencing, so `references/BRAND.md` in a `SKILL.md` lands on `<skill>/references/BRAND.md`.
 - A **bare mention with no path** (`BRAND.md`) carries no directory, so if nothing sits next to `SKILL.md` the skill folder is searched by filename — a prose mention of `BRAND.md` finds `references/BRAND.md` without you rewriting the skill.
 - A reference file may itself reference one more: two hops from `SKILL.md`, then it stops. Each file is inlined once no matter how many times it's mentioned.
-- Only `.md` files **inside the skills folder** are read. External URLs, other file types, and paths escaping the folder (`../../secrets.md`) are never fetched; anything that looked like a local reference but didn't resolve is named in a notice so a dead link doesn't fail silently.
+- Only `.md` files **inside the source folder the skill came from** are read. External URLs, other file types, and paths escaping the folder (`../../secrets.md`) are never fetched — nor are symlinks pointing out of it. Anything that looked like a local reference but didn't resolve is named in a notice so a dead link doesn't fail silently.
 
 Resolution happens when you run a rewrite, not when the picker loads, so unused skills cost nothing.
 
 Total reference size is capped by **Reference budget (characters)** in settings (default 40,000). Files past the cap are skipped whole and named in a notice; the request still goes out.
 
-**Zip import:** command palette → *Skillwright: Import skills from zip*. Handles zips with skills at the root, under one wrapping directory (which is stripped), or a single skill zipped as its own folder (which is kept, so the skill stays in its own subfolder rather than being flattened into the skills folder).
+**Zip import** (for skills you *don't* already have on disk — otherwise point Skillwright at the folder instead): command palette → *Skillwright: Import skills from zip*. Writes into the vault skills folder. Handles zips with skills at the root, under one wrapping directory (which is stripped), or a single skill zipped as its own folder (which is kept, so the skill stays in its own subfolder rather than being flattened into the skills folder).
 
 Two example skills are in `example-skills/` — copy them into your vault's skills folder to try it.
 

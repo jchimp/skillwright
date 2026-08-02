@@ -11,6 +11,10 @@ import {
 export interface SkillwrightSettings {
   defaultProvider: ProviderId;
   skillsFolder: string;
+  /** Auto-detect `~/.claude/skills` and `~/.codex/skills` (desktop only) */
+  includeAgentSkillFolders: boolean;
+  /** Extra skill folders, one absolute path per line; `~` and `#` comments allowed */
+  extraSkillFolders: string;
   temperature: number;
   maxTokens: number;
   /** Char cap on skill reference files inlined into the system prompt */
@@ -23,6 +27,8 @@ export interface SkillwrightSettings {
 export const DEFAULT_SETTINGS: SkillwrightSettings = {
   defaultProvider: "ollama",
   skillsFolder: "_skills",
+  includeAgentSkillFolders: true,
+  extraSkillFolders: "",
   temperature: 0.7,
   maxTokens: 2048,
   refBudgetChars: 40000,
@@ -57,15 +63,63 @@ export class SkillwrightSettingTab extends PluginSettingTab {
         });
       });
 
+    containerEl.createEl("h3", { text: "Skill sources" });
+
     new Setting(containerEl)
       .setName("Skills folder")
-      .setDesc("Vault folder containing Claude Code-style skills (subfolders with SKILL.md).")
+      .setDesc(
+        "Vault folder containing Claude Code-style skills (subfolders with SKILL.md). " +
+          'Skills here shadow same-named skills from the folders below, and "Import skills ' +
+          'from zip…" writes here — but skills you already have on disk need no import.'
+      )
       .addText((t) =>
         t.setValue(s.skillsFolder).onChange(async (v) => {
           s.skillsFolder = v.trim() || "_skills";
           await this.plugin.saveSettings();
         })
       );
+
+    new Setting(containerEl)
+      .setName("Include agent skill folders")
+      .setDesc(
+        "Read ~/.claude/skills and ~/.codex/skills in place, no import needed. Desktop only."
+      )
+      .addToggle((t) =>
+        t.setValue(s.includeAgentSkillFolders).onChange(async (v) => {
+          s.includeAgentSkillFolders = v;
+          await this.plugin.saveSettings();
+        })
+      );
+
+    new Setting(containerEl)
+      .setName("Extra skill folders")
+      .setDesc(
+        "One folder per line, read in place. Absolute paths, `~` allowed; lines starting " +
+          "with # are ignored. Desktop only."
+      )
+      .addTextArea((t) => {
+        t.inputEl.rows = 4;
+        t.setPlaceholder("~/my-skills\nD:\\shared\\skills");
+        t.setValue(s.extraSkillFolders).onChange(async (v) => {
+          s.extraSkillFolders = v;
+          await this.plugin.saveSettings();
+        });
+      });
+
+    new Setting(containerEl)
+      .setName("Reference budget (characters)")
+      .setDesc(
+        "Cap on the reference files a skill pulls into the prompt. Files past the cap are skipped, with a notice."
+      )
+      .addText((t) =>
+        t.setValue(String(s.refBudgetChars)).onChange(async (v) => {
+          const n = parseInt(v, 10);
+          if (!Number.isNaN(n) && n > 0) s.refBudgetChars = n;
+          await this.plugin.saveSettings();
+        })
+      );
+
+    containerEl.createEl("h3", { text: "Generation" });
 
     new Setting(containerEl)
       .setName("Temperature")
@@ -83,19 +137,6 @@ export class SkillwrightSettingTab extends PluginSettingTab {
         t.setValue(String(s.maxTokens)).onChange(async (v) => {
           const n = parseInt(v, 10);
           if (!Number.isNaN(n) && n > 0) s.maxTokens = n;
-          await this.plugin.saveSettings();
-        })
-      );
-
-    new Setting(containerEl)
-      .setName("Reference budget (characters)")
-      .setDesc(
-        "Cap on the reference files a skill pulls into the prompt. Files past the cap are skipped, with a notice."
-      )
-      .addText((t) =>
-        t.setValue(String(s.refBudgetChars)).onChange(async (v) => {
-          const n = parseInt(v, 10);
-          if (!Number.isNaN(n) && n > 0) s.refBudgetChars = n;
           await this.plugin.saveSettings();
         })
       );
