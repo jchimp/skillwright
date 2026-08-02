@@ -72,7 +72,11 @@ export default class SkillwrightPlugin extends Plugin {
     const s = this.settings;
     const defaults = {
       provider: s.defaultProvider,
-      model: s[s.defaultProvider].model,
+      models: {
+        ollama: s.ollama.model,
+        openai: s.openai.model,
+        anthropic: s.anthropic.model,
+      },
     };
 
     new RewriteModal(this.app, skills, defaults, async (choice) => {

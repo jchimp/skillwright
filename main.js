@@ -3839,6 +3839,7 @@ var RewriteModal = class extends import_obsidian4.Modal {
     this.skillDropdown = null;
     this.inputEl = null;
     this.suggestEl = null;
+    this.modelInput = null;
     /** Skills currently listed in the popup; empty means the popup is closed. */
     this.suggestions = [];
     this.activeIndex = 0;
@@ -3849,7 +3850,7 @@ var RewriteModal = class extends import_obsidian4.Modal {
     this.skills = skills;
     this.defaults = defaults;
     this.provider = defaults.provider;
-    this.model = defaults.model;
+    this.model = defaults.models[defaults.provider] ?? "";
     this.onSubmit = onSubmit;
   }
   onOpen() {
@@ -3899,9 +3900,15 @@ var RewriteModal = class extends import_obsidian4.Modal {
       for (const [id, label] of Object.entries(PROVIDER_LABELS))
         dd.addOption(id, label);
       dd.setValue(this.provider);
-      dd.onChange((v) => this.provider = v);
+      dd.onChange((v) => {
+        this.provider = v;
+        this.model = this.defaults.models[this.provider] ?? "";
+        this.modelInput?.setValue(this.model);
+      });
     }).addText((t) => {
-      t.setPlaceholder("model override (optional)");
+      this.modelInput = t;
+      t.setPlaceholder("model (from settings)");
+      t.setValue(this.model);
       t.onChange((v) => this.model = v.trim());
     });
     new import_obsidian4.Setting(contentEl).addButton(
@@ -4059,7 +4066,8 @@ var RewriteModal = class extends import_obsidian4.Modal {
       skill: chosen,
       instruction,
       provider: this.provider,
-      model: this.model || (this.provider === this.defaults.provider ? this.defaults.model : "")
+      // Blank falls back to the provider's configured model in main.ts.
+      model: this.model
     });
   }
   onClose() {
@@ -4457,7 +4465,11 @@ var SkillwrightPlugin = class extends import_obsidian6.Plugin {
     const s = this.settings;
     const defaults = {
       provider: s.defaultProvider,
-      model: s[s.defaultProvider].model
+      models: {
+        ollama: s.ollama.model,
+        openai: s.openai.model,
+        anthropic: s.anthropic.model
+      }
     };
     new RewriteModal(this.app, skills, defaults, async (choice) => {
       const provider = choice.provider;

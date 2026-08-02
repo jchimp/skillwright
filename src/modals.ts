@@ -6,6 +6,7 @@ import {
   Modal,
   Notice,
   Setting,
+  TextComponent,
 } from "obsidian";
 import type { Skill } from "./skills";
 import type { ProviderId } from "./providers";
@@ -100,7 +101,7 @@ export interface RewriteChoice {
  */
 export class RewriteModal extends Modal {
   private skills: Skill[];
-  private defaults: { provider: ProviderId; model: string };
+  private defaults: { provider: ProviderId; models: Record<ProviderId, string> };
   private onSubmit: (choice: RewriteChoice) => void;
 
   private selectedSkill: Skill | null = null;
@@ -114,6 +115,7 @@ export class RewriteModal extends Modal {
   private skillDropdown: DropdownComponent | null = null;
   private inputEl: HTMLTextAreaElement | null = null;
   private suggestEl: HTMLElement | null = null;
+  private modelInput: TextComponent | null = null;
 
   /** Skills currently listed in the popup; empty means the popup is closed. */
   private suggestions: Skill[] = [];
@@ -126,14 +128,14 @@ export class RewriteModal extends Modal {
   constructor(
     app: App,
     skills: Skill[],
-    defaults: { provider: ProviderId; model: string },
+    defaults: { provider: ProviderId; models: Record<ProviderId, string> },
     onSubmit: (choice: RewriteChoice) => void
   ) {
     super(app);
     this.skills = skills;
     this.defaults = defaults;
     this.provider = defaults.provider;
-    this.model = defaults.model;
+    this.model = defaults.models[defaults.provider] ?? "";
     this.onSubmit = onSubmit;
   }
 
@@ -208,10 +210,18 @@ export class RewriteModal extends Modal {
       .addDropdown((dd) => {
         for (const [id, label] of Object.entries(PROVIDER_LABELS)) dd.addOption(id, label);
         dd.setValue(this.provider);
-        dd.onChange((v) => (this.provider = v as ProviderId));
+        dd.onChange((v) => {
+          this.provider = v as ProviderId;
+          // Show the newly picked provider's configured model, so the field
+          // always names the model that would actually run.
+          this.model = this.defaults.models[this.provider] ?? "";
+          this.modelInput?.setValue(this.model);
+        });
       })
       .addText((t) => {
-        t.setPlaceholder("model override (optional)");
+        this.modelInput = t;
+        t.setPlaceholder("model (from settings)");
+        t.setValue(this.model);
         t.onChange((v) => (this.model = v.trim()));
       });
 
@@ -387,7 +397,8 @@ export class RewriteModal extends Modal {
       skill: chosen,
       instruction,
       provider: this.provider,
-      model: this.model || (this.provider === this.defaults.provider ? this.defaults.model : ""),
+      // Blank falls back to the provider's configured model in main.ts.
+      model: this.model,
     });
   }
 
