@@ -1,13 +1,101 @@
-.skillwright-modal .skillwright-skill-desc {
+.skillwright-info .skillwright-info-desc {
+  white-space: pre-wrap;
+  line-height: 1.5;
+  font-size: var(--font-ui-small);
+}
+
+.skillwright-info .skillwright-info-desc.is-empty {
   color: var(--text-muted);
+  font-style: italic;
+}
+
+.skillwright-info .skillwright-info-path {
+  margin-top: 12px;
   font-size: var(--font-ui-smaller);
-  margin: -6px 0 10px 0;
-  min-height: 1.2em;
+  font-family: var(--font-monospace);
+  color: var(--text-faint);
+  overflow-wrap: anywhere;
+}
+
+/* Obsidian's setting row is a two-column flex (label left, control right), which
+   squeezes a textarea into half the dialog. Stack it instead so the field runs
+   the full width under its label, like a chat composer. */
+.skillwright-modal .skillwright-instruction-row {
+  display: block;
+  border-top: none;
+  padding-top: 0;
+}
+
+.skillwright-modal .skillwright-instruction-row .setting-item-info {
+  margin-right: 0;
+}
+
+/* The control slot is a right-justified flex row by default; blocking it out and
+   resetting the alignment keeps the field and its popup reading left-to-right. */
+.skillwright-modal .skillwright-instruction-row .setting-item-control {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  padding-left: 0;
+  text-align: left;
+  justify-content: flex-start;
+}
+
+.skillwright-modal .skillwright-instruction-wrap {
+  position: relative;
+  width: 100%;
 }
 
 .skillwright-modal .skillwright-instruction {
+  display: block;
   width: 100%;
+  text-align: left;
+  min-height: 5.5em;
+  resize: vertical;
+  padding: 8px 10px;
+  line-height: 1.45;
   font-family: var(--font-text);
+  font-size: var(--font-ui-medium);
+}
+
+/* Sized to its content and placed at the caret by positionSuggest(); it overlays
+   the controls below rather than pushing them down, so the modal doesn't jump
+   every time the popup opens. */
+.skillwright-modal .skillwright-suggest {
+  position: absolute;
+  z-index: 2;
+  width: max-content;
+  min-width: 12em;
+  max-width: 100%;
+  max-height: 14em;
+  overflow-y: auto;
+  text-align: left;
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  box-shadow: var(--shadow-s);
+}
+
+.skillwright-modal .skillwright-suggest-item {
+  padding: 4px 8px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.skillwright-modal .skillwright-suggest-item.is-active {
+  background: var(--background-modifier-hover);
+}
+
+.skillwright-modal .skillwright-suggest-name {
+  font-size: var(--font-ui-small);
+}
+
+.skillwright-modal .skillwright-suggest-desc {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Obsidian's default modal is sized for settings forms, which is too narrow for

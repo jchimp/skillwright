@@ -1,7 +1,85 @@
-import { App, ButtonComponent, Modal, Notice, Setting } from "obsidian";
+import {
+  App,
+  ButtonComponent,
+  DropdownComponent,
+  ExtraButtonComponent,
+  Modal,
+  Notice,
+  Setting,
+} from "obsidian";
 import type { Skill } from "./skills";
 import type { ProviderId } from "./providers";
 import { renderSideBySideDiff } from "./diffview";
+import { matchSkills, resolveSkillToken, skillSlug, tokenAtCursor } from "./skillref";
+
+/** Rows shown in the `/` autocomplete before it starts scrolling. */
+const MAX_SUGGESTIONS = 8;
+
+/** Box and text metrics the caret mirror has to copy for its wrapping to match. */
+const MIRROR_PROPS = [
+  "boxSizing",
+  "width",
+  "paddingTop",
+  "paddingRight",
+  "paddingBottom",
+  "paddingLeft",
+  "borderTopWidth",
+  "borderRightWidth",
+  "borderBottomWidth",
+  "borderLeftWidth",
+  "fontFamily",
+  "fontSize",
+  "fontWeight",
+  "fontStyle",
+  "letterSpacing",
+  "lineHeight",
+  "textTransform",
+  "wordSpacing",
+  "textIndent",
+] as const;
+
+/**
+ * Pixel position of a character offset inside a textarea, relative to the
+ * element's own top-left corner.
+ *
+ * A textarea exposes no caret geometry, so this measures an off-screen div that
+ * mirrors the element's box and text metrics with a zero-width marker at the
+ * offset. The text after the marker is included so line wrapping matches.
+ *
+ * @param ta - the textarea to measure
+ * @param index - character offset to locate
+ * @returns caret left/top in pixels, plus the line height at that point
+ */
+function caretCoords(
+  ta: HTMLTextAreaElement,
+  index: number
+): { left: number; top: number; height: number } {
+  const cs = window.getComputedStyle(ta);
+  const mirror = document.body.createDiv();
+  const style = mirror.style as unknown as Record<string, string>;
+  const computed = cs as unknown as Record<string, string>;
+  for (const p of MIRROR_PROPS) style[p] = computed[p];
+  style.position = "absolute";
+  style.top = "0";
+  style.left = "-9999px";
+  style.visibility = "hidden";
+  style.height = "auto";
+  style.whiteSpace = "pre-wrap";
+  style.overflowWrap = "break-word";
+
+  mirror.setText(ta.value.slice(0, index));
+  // Zero-width space: occupies a line box to measure, but no horizontal room,
+  // so it can't shift the very position it is measuring.
+  const marker = mirror.createSpan({ text: "​" });
+  mirror.createSpan({ text: ta.value.slice(index) });
+
+  const left = marker.offsetLeft;
+  const top = marker.offsetTop;
+  const height = marker.offsetHeight || parseFloat(cs.lineHeight) || 16;
+  mirror.remove();
+
+  return { left: left - ta.scrollLeft, top: top - ta.scrollTop, height };
+}
 
 const PROVIDER_LABELS: Record<ProviderId, string> = {
   ollama: "Ollama",
@@ -16,7 +94,10 @@ export interface RewriteChoice {
   model: string;
 }
 
-/** Skill picker + freeform instruction + provider/model override. */
+/**
+ * Freeform instruction with `/skill` autocomplete, plus a dropdown picker and a
+ * provider/model override.
+ */
 export class RewriteModal extends Modal {
   private skills: Skill[];
   private defaults: { provider: ProviderId; model: string };
@@ -26,6 +107,21 @@ export class RewriteModal extends Modal {
   private instruction = "";
   private provider: ProviderId;
   private model: string;
+
+  // Built in onOpen(); every handler runs after that, so the null checks at
+  // their use sites never actually fire.
+  private infoButton: ExtraButtonComponent | null = null;
+  private skillDropdown: DropdownComponent | null = null;
+  private inputEl: HTMLTextAreaElement | null = null;
+  private suggestEl: HTMLElement | null = null;
+
+  /** Skills currently listed in the popup; empty means the popup is closed. */
+  private suggestions: Skill[] = [];
+  private activeIndex = 0;
+  /** Offset of the `/` the popup is anchored to. */
+  private tokenStart = 0;
+  /** True when the current selection came from a `/token`, so deleting it clears. */
+  private skillFromText = false;
 
   constructor(
     app: App,
@@ -46,31 +142,57 @@ export class RewriteModal extends Modal {
     contentEl.addClass("skillwright-modal");
     contentEl.createEl("h3", { text: "Rewrite selection" });
 
+    // setClass flips this row to a stacked layout in CSS, so the textarea reads
+    // as a full-width chat field under its label rather than a right-hand control.
+    new Setting(contentEl)
+      .setName("Instruction")
+      .setDesc('e.g. "rewrite in Lab Notes voice /jchimp-brand", "tighten to half length"')
+      .setClass("skillwright-instruction-row")
+      .addTextArea((ta) => {
+        ta.setPlaceholder("What should happen to the selection?  Type / to pick a skill.");
+        ta.inputEl.rows = 4;
+        ta.inputEl.addClass("skillwright-instruction");
+        this.inputEl = ta.inputEl;
+
+        // The popup is absolutely positioned against this wrapper, so it has to
+        // sit between the textarea and its Setting row rather than alongside.
+        const wrap = ta.inputEl.parentElement?.createDiv({ cls: "skillwright-instruction-wrap" });
+        if (wrap) {
+          wrap.appendChild(ta.inputEl);
+          this.suggestEl = wrap.createDiv({ cls: "skillwright-suggest" });
+          this.suggestEl.hide();
+        }
+
+        window.setTimeout(() => ta.inputEl.focus(), 0);
+        for (const ev of ["input", "keyup", "click"] as const) {
+          ta.inputEl.addEventListener(ev, () => this.syncFromText());
+        }
+        ta.inputEl.addEventListener("keydown", (e) => this.onInputKeydown(e));
+        // Deferred so a mousedown on a suggestion row still lands first.
+        ta.inputEl.addEventListener("blur", () => window.setTimeout(() => this.closeSuggest(), 100));
+      });
+
+    // The description lives behind this button rather than inline: as a live
+    // block of text it resized the dialog on every selection change.
     new Setting(contentEl)
       .setName("Skill")
       .setDesc("Optional. Loaded from your skills folder.")
+      .addExtraButton((b) => {
+        this.infoButton = b;
+        b.setIcon("info")
+          .setTooltip("Show skill description")
+          .setDisabled(true)
+          .onClick(() => {
+            if (this.selectedSkill) new SkillInfoModal(this.app, this.selectedSkill).open();
+          });
+      })
       .addDropdown((dd) => {
+        this.skillDropdown = dd;
         dd.addOption("", "— none (instruction only) —");
-        for (const s of this.skills) dd.addOption(s.name, s.name);
+        // Indexes, not names: two skills can share a frontmatter `name`.
+        this.skills.forEach((s, i) => dd.addOption(String(i), s.name));
         dd.onChange((v) => {
-          this.selectedSkill = this.skills.find((s) => s.name === v) ?? null;
-          descEl.setText(this.selectedSkill?.description ?? "");
-        });
-      });
-
-    const descEl = contentEl.createEl("div", { cls: "skillwright-skill-desc" });
-
-    new Setting(contentEl)
-      .setName("Instruction")
-      .setDesc('e.g. "rewrite in Lab Notes voice", "tighten to half length"')
-      .addTextArea((ta) => {
-        ta.setPlaceholder("What should happen to the selection?");
-        ta.inputEl.rows = 3;
-        ta.inputEl.addClass("skillwright-instruction");
-        ta.onChange((v) => (this.instruction = v));
-        window.setTimeout(() => ta.inputEl.focus(), 0);
-        ta.inputEl.addEventListener("keydown", (e) => {
-          if ((e.ctrlKey || e.metaKey) && e.key === "Enter") this.submit();
+          this.setSkill(v === "" ? null : this.skills[Number(v)] ?? null, "dropdown");
         });
       });
 
@@ -94,18 +216,197 @@ export class RewriteModal extends Modal {
     );
   }
 
+  /**
+   * Points every view of the selection at one skill.
+   *
+   * @param skill - the skill now in effect, or null for none
+   * @param source - `"text"` for a `/token`, `"dropdown"` for the picker. A text
+   *   change also moves the dropdown; the reverse would fight the user's typing.
+   */
+  private setSkill(skill: Skill | null, source: "text" | "dropdown"): void {
+    this.selectedSkill = skill;
+    this.skillFromText = source === "text" && skill !== null;
+    this.infoButton?.setDisabled(!skill);
+    this.infoButton?.setTooltip(skill ? `About "${skill.name}"` : "Show skill description");
+    if (source === "text") {
+      const i = skill ? this.skills.indexOf(skill) : -1;
+      this.skillDropdown?.setValue(i >= 0 ? String(i) : "");
+    }
+  }
+
+  /** Re-reads the textarea after any edit: resolves `/tokens`, repaints the popup. */
+  private syncFromText(): void {
+    const el = this.inputEl;
+    if (!el) return;
+    this.instruction = el.value;
+
+    const { skill } = resolveSkillToken(el.value, this.skills);
+    if (skill) this.setSkill(skill, "text");
+    // Deleting the token clears it, but a dropdown pick must survive typing.
+    else if (this.skillFromText) this.setSkill(null, "text");
+
+    const token = tokenAtCursor(el.value, el.selectionStart);
+    if (!token) {
+      this.closeSuggest();
+      return;
+    }
+    this.tokenStart = token.start;
+    this.openSuggest(matchSkills(token.query, this.skills).slice(0, MAX_SUGGESTIONS));
+  }
+
+  private openSuggest(matches: Skill[]): void {
+    const box = this.suggestEl;
+    if (!box) return;
+    if (!matches.length) {
+      this.closeSuggest();
+      return;
+    }
+
+    this.suggestions = matches;
+    this.activeIndex = Math.min(this.activeIndex, matches.length - 1);
+    box.empty();
+    matches.forEach((s, i) => {
+      const row = box.createDiv({ cls: "skillwright-suggest-item" });
+      row.toggleClass("is-active", i === this.activeIndex);
+      row.createDiv({ cls: "skillwright-suggest-name", text: skillSlug(s.name) });
+      if (s.description) {
+        row.createDiv({ cls: "skillwright-suggest-desc", text: s.description });
+      }
+      // mousedown, not click: the textarea's blur would close the popup first.
+      row.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        this.acceptSuggestion(i);
+      });
+    });
+    box.show();
+    this.positionSuggest();
+  }
+
+  /**
+   * Anchors the popup under the `/` that opened it. Measured after the rows are
+   * in the DOM, so the box's own width is known and can be clamped against the
+   * textarea's right edge instead of spilling out of the modal.
+   */
+  private positionSuggest(): void {
+    const el = this.inputEl;
+    const box = this.suggestEl;
+    if (!el || !box) return;
+
+    const { left, top, height } = caretCoords(el, this.tokenStart);
+    const maxLeft = Math.max(0, el.offsetWidth - box.offsetWidth);
+    box.style.left = `${el.offsetLeft + Math.min(Math.max(left, 0), maxLeft)}px`;
+    box.style.top = `${el.offsetTop + top + height + 4}px`;
+  }
+
+  private closeSuggest(): void {
+    this.suggestions = [];
+    this.activeIndex = 0;
+    this.suggestEl?.hide();
+  }
+
+  private moveActive(delta: number): void {
+    const n = this.suggestions.length;
+    if (!n) return;
+    this.activeIndex = (this.activeIndex + delta + n) % n;
+    this.openSuggest(this.suggestions);
+  }
+
+  /** Splices `/<slug> ` over the token under the caret. */
+  private acceptSuggestion(index: number): void {
+    const el = this.inputEl;
+    const skill = this.suggestions[index];
+    if (!el || !skill) return;
+
+    const token = tokenAtCursor(el.value, el.selectionStart);
+    if (!token) {
+      this.closeSuggest();
+      return;
+    }
+
+    const insert = `/${skillSlug(skill.name)} `;
+    el.value = el.value.slice(0, token.start) + insert + el.value.slice(token.end);
+    const caret = token.start + insert.length;
+    el.setSelectionRange(caret, caret);
+    this.instruction = el.value;
+
+    this.closeSuggest();
+    this.setSkill(skill, "text");
+    el.focus();
+  }
+
+  private onInputKeydown(e: KeyboardEvent): void {
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+      this.submit();
+      return;
+    }
+    if (!this.suggestions.length) return;
+
+    switch (e.key) {
+      case "ArrowDown":
+        e.preventDefault();
+        this.moveActive(1);
+        break;
+      case "ArrowUp":
+        e.preventDefault();
+        this.moveActive(-1);
+        break;
+      case "Enter":
+      case "Tab":
+        e.preventDefault();
+        this.acceptSuggestion(this.activeIndex);
+        break;
+      case "Escape":
+        // Stop it reaching Obsidian's modal scope, which would close the dialog.
+        e.preventDefault();
+        e.stopPropagation();
+        this.closeSuggest();
+        break;
+    }
+  }
+
   private submit(): void {
-    if (!this.selectedSkill && !this.instruction.trim()) {
+    // The text is authoritative: a `/token` overrides whatever the dropdown holds.
+    const text = this.inputEl?.value ?? this.instruction;
+    const { skill, cleaned } = resolveSkillToken(text, this.skills);
+    const chosen = skill ?? this.selectedSkill;
+    const instruction = cleaned.trim();
+
+    if (!chosen && !instruction) {
       new Notice("Pick a skill or type an instruction.");
       return;
     }
     this.close();
     this.onSubmit({
-      skill: this.selectedSkill,
-      instruction: this.instruction.trim(),
+      skill: chosen,
+      instruction,
       provider: this.provider,
       model: this.model || (this.provider === this.defaults.provider ? this.defaults.model : ""),
     });
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+  }
+}
+
+/** Read-only detail view for one skill, opened from the info button. */
+export class SkillInfoModal extends Modal {
+  private skill: Skill;
+
+  constructor(app: App, skill: Skill) {
+    super(app);
+    this.skill = skill;
+  }
+
+  onOpen(): void {
+    const { contentEl } = this;
+    contentEl.addClass("skillwright-modal", "skillwright-info");
+    contentEl.createEl("h3", { text: this.skill.name });
+    contentEl.createEl("div", {
+      text: this.skill.description || "No description in this skill's frontmatter.",
+      cls: this.skill.description ? "skillwright-info-desc" : "skillwright-info-desc is-empty",
+    });
+    contentEl.createEl("div", { text: this.skill.filePath, cls: "skillwright-info-path" });
   }
 
   onClose(): void {
