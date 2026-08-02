@@ -10,6 +10,13 @@
   font-family: var(--font-text);
 }
 
+/* Obsidian's default modal is sized for settings forms, which is too narrow for
+   prose. Degrades to the default width where :has() is unsupported. */
+.modal:has(.skillwright-result) {
+  width: min(880px, 92vw);
+  max-width: 92vw;
+}
+
 .skillwright-result .skillwright-meta {
   display: flex;
   flex-wrap: wrap;
@@ -25,34 +32,150 @@
   padding: 2px 8px;
 }
 
-.skillwright-result .skillwright-label {
-  font-size: var(--font-ui-smaller);
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  margin-top: 12px;
-  margin-bottom: 4px;
-}
-
-.skillwright-result .skillwright-original {
-  background: var(--background-secondary);
-  border-radius: var(--radius-s);
-  padding: 8px 10px;
-  max-height: 160px;
-  overflow-y: auto;
-  white-space: pre-wrap;
-  font-size: var(--font-ui-small);
-}
-
-.skillwright-result .skillwright-result-text {
-  width: 100%;
-  font-family: var(--font-text);
-  resize: vertical;
-}
-
 .skillwright-result .skillwright-actions {
   display: flex;
   gap: 8px;
   margin-top: 14px;
   justify-content: flex-end;
+}
+
+.skillwright-result .skillwright-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 8px 0 4px 0;
+}
+
+.skillwright-result .skillwright-toggle {
+  display: flex;
+  gap: 0;
+}
+
+.skillwright-result .skillwright-toggle button {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  padding: 2px 10px;
+  height: auto;
+  box-shadow: none;
+}
+
+/* Square off the shared inner edge so two buttons read as one segmented control. */
+.skillwright-result .skillwright-toggle button:first-child {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.skillwright-result .skillwright-toggle button:last-child {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  border-left: none;
+}
+
+.skillwright-result .skillwright-toggle button.is-active {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.skillwright-result .skillwright-nav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.skillwright-result .skillwright-nav-label {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  white-space: nowrap;
+  min-width: 6em;
+  text-align: center;
+}
+
+.skillwright-result .skillwright-nav button {
+  font-size: var(--font-ui-smaller);
+  padding: 2px 8px;
+  height: auto;
+  box-shadow: none;
+}
+
+.skillwright-result .skillwright-nav button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Viewport-relative so the pane uses whatever height the window actually has,
+   rather than a fixed cap that wastes space on a large screen. */
+.skillwright-result .skillwright-pane {
+  background: var(--background-secondary);
+  border-radius: var(--radius-s);
+  padding: 8px 10px;
+  max-height: 55vh;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  font-size: var(--font-ui-small);
+  font-family: var(--font-text);
+}
+
+/* Edit mode: the Original block and the textarea each carry their own chrome,
+   so the pane drops its background/padding to avoid doubling up. */
+.skillwright-result .skillwright-pane.skillwright-pane-edit {
+  background: none;
+  padding: 0;
+}
+
+.skillwright-result .skillwright-pane .skillwright-label {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 4px;
+}
+
+.skillwright-result .skillwright-pane .skillwright-label:not(:first-child) {
+  margin-top: 12px;
+}
+
+.skillwright-result .skillwright-pane .skillwright-original {
+  background: var(--background-secondary);
+  border-radius: var(--radius-s);
+  padding: 8px 10px;
+  max-height: 22vh;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  font-size: var(--font-ui-small);
+}
+
+/* Height is set inline by fitToContent(); max-height caps the growth and hands
+   overflow back to the textarea's own scrollbar. */
+.skillwright-result .skillwright-pane .skillwright-result-text {
+  width: 100%;
+  min-height: 8em;
+  max-height: 40vh;
+  overflow-y: auto;
+  font-family: var(--font-text);
+  resize: vertical;
+}
+
+.skillwright-result .skillwright-pane .skillwright-ins {
+  background: var(--background-modifier-success);
+  padding: 0 2px;
+  border-radius: var(--radius-s);
+}
+
+.skillwright-result .skillwright-pane .skillwright-del {
+  background: var(--background-modifier-error);
+  text-decoration: line-through;
+  opacity: 0.8;
+  padding: 0 2px;
+  border-radius: var(--radius-s);
+}
+
+.skillwright-result .skillwright-pane .skillwright-diff-note {
+  display: block;
+  margin-top: 6px;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  font-style: italic;
 }

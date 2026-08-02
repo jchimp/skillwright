@@ -2731,7 +2731,7 @@ __export(main_exports, {
   default: () => SkillwrightPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian5 = require("obsidian");
+var import_obsidian6 = require("obsidian");
 
 // src/providers.ts
 var import_obsidian = require("obsidian");
@@ -3052,13 +3052,597 @@ async function ensureFolder(app, path) {
 }
 
 // src/modals.ts
+var import_obsidian4 = require("obsidian");
+
+// node_modules/diff/lib/index.mjs
+function Diff() {
+}
+Diff.prototype = {
+  diff: function diff(oldString, newString) {
+    var _options$timeout;
+    var options = arguments.length > 2 && arguments[2] !== void 0 ? arguments[2] : {};
+    var callback = options.callback;
+    if (typeof options === "function") {
+      callback = options;
+      options = {};
+    }
+    var self2 = this;
+    function done(value) {
+      value = self2.postProcess(value, options);
+      if (callback) {
+        setTimeout(function() {
+          callback(value);
+        }, 0);
+        return true;
+      } else {
+        return value;
+      }
+    }
+    oldString = this.castInput(oldString, options);
+    newString = this.castInput(newString, options);
+    oldString = this.removeEmpty(this.tokenize(oldString, options));
+    newString = this.removeEmpty(this.tokenize(newString, options));
+    var newLen = newString.length, oldLen = oldString.length;
+    var editLength = 1;
+    var maxEditLength = newLen + oldLen;
+    if (options.maxEditLength != null) {
+      maxEditLength = Math.min(maxEditLength, options.maxEditLength);
+    }
+    var maxExecutionTime = (_options$timeout = options.timeout) !== null && _options$timeout !== void 0 ? _options$timeout : Infinity;
+    var abortAfterTimestamp = Date.now() + maxExecutionTime;
+    var bestPath = [{
+      oldPos: -1,
+      lastComponent: void 0
+    }];
+    var newPos = this.extractCommon(bestPath[0], newString, oldString, 0, options);
+    if (bestPath[0].oldPos + 1 >= oldLen && newPos + 1 >= newLen) {
+      return done(buildValues(self2, bestPath[0].lastComponent, newString, oldString, self2.useLongestToken));
+    }
+    var minDiagonalToConsider = -Infinity, maxDiagonalToConsider = Infinity;
+    function execEditLength() {
+      for (var diagonalPath = Math.max(minDiagonalToConsider, -editLength); diagonalPath <= Math.min(maxDiagonalToConsider, editLength); diagonalPath += 2) {
+        var basePath = void 0;
+        var removePath = bestPath[diagonalPath - 1], addPath = bestPath[diagonalPath + 1];
+        if (removePath) {
+          bestPath[diagonalPath - 1] = void 0;
+        }
+        var canAdd = false;
+        if (addPath) {
+          var addPathNewPos = addPath.oldPos - diagonalPath;
+          canAdd = addPath && 0 <= addPathNewPos && addPathNewPos < newLen;
+        }
+        var canRemove = removePath && removePath.oldPos + 1 < oldLen;
+        if (!canAdd && !canRemove) {
+          bestPath[diagonalPath] = void 0;
+          continue;
+        }
+        if (!canRemove || canAdd && removePath.oldPos < addPath.oldPos) {
+          basePath = self2.addToPath(addPath, true, false, 0, options);
+        } else {
+          basePath = self2.addToPath(removePath, false, true, 1, options);
+        }
+        newPos = self2.extractCommon(basePath, newString, oldString, diagonalPath, options);
+        if (basePath.oldPos + 1 >= oldLen && newPos + 1 >= newLen) {
+          return done(buildValues(self2, basePath.lastComponent, newString, oldString, self2.useLongestToken));
+        } else {
+          bestPath[diagonalPath] = basePath;
+          if (basePath.oldPos + 1 >= oldLen) {
+            maxDiagonalToConsider = Math.min(maxDiagonalToConsider, diagonalPath - 1);
+          }
+          if (newPos + 1 >= newLen) {
+            minDiagonalToConsider = Math.max(minDiagonalToConsider, diagonalPath + 1);
+          }
+        }
+      }
+      editLength++;
+    }
+    if (callback) {
+      (function exec() {
+        setTimeout(function() {
+          if (editLength > maxEditLength || Date.now() > abortAfterTimestamp) {
+            return callback();
+          }
+          if (!execEditLength()) {
+            exec();
+          }
+        }, 0);
+      })();
+    } else {
+      while (editLength <= maxEditLength && Date.now() <= abortAfterTimestamp) {
+        var ret = execEditLength();
+        if (ret) {
+          return ret;
+        }
+      }
+    }
+  },
+  addToPath: function addToPath(path, added, removed, oldPosInc, options) {
+    var last = path.lastComponent;
+    if (last && !options.oneChangePerToken && last.added === added && last.removed === removed) {
+      return {
+        oldPos: path.oldPos + oldPosInc,
+        lastComponent: {
+          count: last.count + 1,
+          added,
+          removed,
+          previousComponent: last.previousComponent
+        }
+      };
+    } else {
+      return {
+        oldPos: path.oldPos + oldPosInc,
+        lastComponent: {
+          count: 1,
+          added,
+          removed,
+          previousComponent: last
+        }
+      };
+    }
+  },
+  extractCommon: function extractCommon(basePath, newString, oldString, diagonalPath, options) {
+    var newLen = newString.length, oldLen = oldString.length, oldPos = basePath.oldPos, newPos = oldPos - diagonalPath, commonCount = 0;
+    while (newPos + 1 < newLen && oldPos + 1 < oldLen && this.equals(oldString[oldPos + 1], newString[newPos + 1], options)) {
+      newPos++;
+      oldPos++;
+      commonCount++;
+      if (options.oneChangePerToken) {
+        basePath.lastComponent = {
+          count: 1,
+          previousComponent: basePath.lastComponent,
+          added: false,
+          removed: false
+        };
+      }
+    }
+    if (commonCount && !options.oneChangePerToken) {
+      basePath.lastComponent = {
+        count: commonCount,
+        previousComponent: basePath.lastComponent,
+        added: false,
+        removed: false
+      };
+    }
+    basePath.oldPos = oldPos;
+    return newPos;
+  },
+  equals: function equals(left, right, options) {
+    if (options.comparator) {
+      return options.comparator(left, right);
+    } else {
+      return left === right || options.ignoreCase && left.toLowerCase() === right.toLowerCase();
+    }
+  },
+  removeEmpty: function removeEmpty(array) {
+    var ret = [];
+    for (var i = 0; i < array.length; i++) {
+      if (array[i]) {
+        ret.push(array[i]);
+      }
+    }
+    return ret;
+  },
+  castInput: function castInput(value) {
+    return value;
+  },
+  tokenize: function tokenize(value) {
+    return Array.from(value);
+  },
+  join: function join(chars) {
+    return chars.join("");
+  },
+  postProcess: function postProcess(changeObjects) {
+    return changeObjects;
+  }
+};
+function buildValues(diff2, lastComponent, newString, oldString, useLongestToken) {
+  var components = [];
+  var nextComponent;
+  while (lastComponent) {
+    components.push(lastComponent);
+    nextComponent = lastComponent.previousComponent;
+    delete lastComponent.previousComponent;
+    lastComponent = nextComponent;
+  }
+  components.reverse();
+  var componentPos = 0, componentLen = components.length, newPos = 0, oldPos = 0;
+  for (; componentPos < componentLen; componentPos++) {
+    var component = components[componentPos];
+    if (!component.removed) {
+      if (!component.added && useLongestToken) {
+        var value = newString.slice(newPos, newPos + component.count);
+        value = value.map(function(value2, i) {
+          var oldValue = oldString[oldPos + i];
+          return oldValue.length > value2.length ? oldValue : value2;
+        });
+        component.value = diff2.join(value);
+      } else {
+        component.value = diff2.join(newString.slice(newPos, newPos + component.count));
+      }
+      newPos += component.count;
+      if (!component.added) {
+        oldPos += component.count;
+      }
+    } else {
+      component.value = diff2.join(oldString.slice(oldPos, oldPos + component.count));
+      oldPos += component.count;
+    }
+  }
+  return components;
+}
+var characterDiff = new Diff();
+function longestCommonPrefix(str1, str2) {
+  var i;
+  for (i = 0; i < str1.length && i < str2.length; i++) {
+    if (str1[i] != str2[i]) {
+      return str1.slice(0, i);
+    }
+  }
+  return str1.slice(0, i);
+}
+function longestCommonSuffix(str1, str2) {
+  var i;
+  if (!str1 || !str2 || str1[str1.length - 1] != str2[str2.length - 1]) {
+    return "";
+  }
+  for (i = 0; i < str1.length && i < str2.length; i++) {
+    if (str1[str1.length - (i + 1)] != str2[str2.length - (i + 1)]) {
+      return str1.slice(-i);
+    }
+  }
+  return str1.slice(-i);
+}
+function replacePrefix(string, oldPrefix, newPrefix) {
+  if (string.slice(0, oldPrefix.length) != oldPrefix) {
+    throw Error("string ".concat(JSON.stringify(string), " doesn't start with prefix ").concat(JSON.stringify(oldPrefix), "; this is a bug"));
+  }
+  return newPrefix + string.slice(oldPrefix.length);
+}
+function replaceSuffix(string, oldSuffix, newSuffix) {
+  if (!oldSuffix) {
+    return string + newSuffix;
+  }
+  if (string.slice(-oldSuffix.length) != oldSuffix) {
+    throw Error("string ".concat(JSON.stringify(string), " doesn't end with suffix ").concat(JSON.stringify(oldSuffix), "; this is a bug"));
+  }
+  return string.slice(0, -oldSuffix.length) + newSuffix;
+}
+function removePrefix(string, oldPrefix) {
+  return replacePrefix(string, oldPrefix, "");
+}
+function removeSuffix(string, oldSuffix) {
+  return replaceSuffix(string, oldSuffix, "");
+}
+function maximumOverlap(string1, string2) {
+  return string2.slice(0, overlapCount(string1, string2));
+}
+function overlapCount(a, b) {
+  var startA = 0;
+  if (a.length > b.length) {
+    startA = a.length - b.length;
+  }
+  var endB = b.length;
+  if (a.length < b.length) {
+    endB = a.length;
+  }
+  var map = Array(endB);
+  var k = 0;
+  map[0] = 0;
+  for (var j = 1; j < endB; j++) {
+    if (b[j] == b[k]) {
+      map[j] = map[k];
+    } else {
+      map[j] = k;
+    }
+    while (k > 0 && b[j] != b[k]) {
+      k = map[k];
+    }
+    if (b[j] == b[k]) {
+      k++;
+    }
+  }
+  k = 0;
+  for (var i = startA; i < a.length; i++) {
+    while (k > 0 && a[i] != b[k]) {
+      k = map[k];
+    }
+    if (a[i] == b[k]) {
+      k++;
+    }
+  }
+  return k;
+}
+var extendedWordChars = "a-zA-Z0-9_\\u{C0}-\\u{FF}\\u{D8}-\\u{F6}\\u{F8}-\\u{2C6}\\u{2C8}-\\u{2D7}\\u{2DE}-\\u{2FF}\\u{1E00}-\\u{1EFF}";
+var tokenizeIncludingWhitespace = new RegExp("[".concat(extendedWordChars, "]+|\\s+|[^").concat(extendedWordChars, "]"), "ug");
+var wordDiff = new Diff();
+wordDiff.equals = function(left, right, options) {
+  if (options.ignoreCase) {
+    left = left.toLowerCase();
+    right = right.toLowerCase();
+  }
+  return left.trim() === right.trim();
+};
+wordDiff.tokenize = function(value) {
+  var options = arguments.length > 1 && arguments[1] !== void 0 ? arguments[1] : {};
+  var parts;
+  if (options.intlSegmenter) {
+    if (options.intlSegmenter.resolvedOptions().granularity != "word") {
+      throw new Error('The segmenter passed must have a granularity of "word"');
+    }
+    parts = Array.from(options.intlSegmenter.segment(value), function(segment) {
+      return segment.segment;
+    });
+  } else {
+    parts = value.match(tokenizeIncludingWhitespace) || [];
+  }
+  var tokens = [];
+  var prevPart = null;
+  parts.forEach(function(part) {
+    if (/\s/.test(part)) {
+      if (prevPart == null) {
+        tokens.push(part);
+      } else {
+        tokens.push(tokens.pop() + part);
+      }
+    } else if (/\s/.test(prevPart)) {
+      if (tokens[tokens.length - 1] == prevPart) {
+        tokens.push(tokens.pop() + part);
+      } else {
+        tokens.push(prevPart + part);
+      }
+    } else {
+      tokens.push(part);
+    }
+    prevPart = part;
+  });
+  return tokens;
+};
+wordDiff.join = function(tokens) {
+  return tokens.map(function(token, i) {
+    if (i == 0) {
+      return token;
+    } else {
+      return token.replace(/^\s+/, "");
+    }
+  }).join("");
+};
+wordDiff.postProcess = function(changes, options) {
+  if (!changes || options.oneChangePerToken) {
+    return changes;
+  }
+  var lastKeep = null;
+  var insertion = null;
+  var deletion = null;
+  changes.forEach(function(change) {
+    if (change.added) {
+      insertion = change;
+    } else if (change.removed) {
+      deletion = change;
+    } else {
+      if (insertion || deletion) {
+        dedupeWhitespaceInChangeObjects(lastKeep, deletion, insertion, change);
+      }
+      lastKeep = change;
+      insertion = null;
+      deletion = null;
+    }
+  });
+  if (insertion || deletion) {
+    dedupeWhitespaceInChangeObjects(lastKeep, deletion, insertion, null);
+  }
+  return changes;
+};
+function dedupeWhitespaceInChangeObjects(startKeep, deletion, insertion, endKeep) {
+  if (deletion && insertion) {
+    var oldWsPrefix = deletion.value.match(/^\s*/)[0];
+    var oldWsSuffix = deletion.value.match(/\s*$/)[0];
+    var newWsPrefix = insertion.value.match(/^\s*/)[0];
+    var newWsSuffix = insertion.value.match(/\s*$/)[0];
+    if (startKeep) {
+      var commonWsPrefix = longestCommonPrefix(oldWsPrefix, newWsPrefix);
+      startKeep.value = replaceSuffix(startKeep.value, newWsPrefix, commonWsPrefix);
+      deletion.value = removePrefix(deletion.value, commonWsPrefix);
+      insertion.value = removePrefix(insertion.value, commonWsPrefix);
+    }
+    if (endKeep) {
+      var commonWsSuffix = longestCommonSuffix(oldWsSuffix, newWsSuffix);
+      endKeep.value = replacePrefix(endKeep.value, newWsSuffix, commonWsSuffix);
+      deletion.value = removeSuffix(deletion.value, commonWsSuffix);
+      insertion.value = removeSuffix(insertion.value, commonWsSuffix);
+    }
+  } else if (insertion) {
+    if (startKeep) {
+      insertion.value = insertion.value.replace(/^\s*/, "");
+    }
+    if (endKeep) {
+      endKeep.value = endKeep.value.replace(/^\s*/, "");
+    }
+  } else if (startKeep && endKeep) {
+    var newWsFull = endKeep.value.match(/^\s*/)[0], delWsStart = deletion.value.match(/^\s*/)[0], delWsEnd = deletion.value.match(/\s*$/)[0];
+    var newWsStart = longestCommonPrefix(newWsFull, delWsStart);
+    deletion.value = removePrefix(deletion.value, newWsStart);
+    var newWsEnd = longestCommonSuffix(removePrefix(newWsFull, newWsStart), delWsEnd);
+    deletion.value = removeSuffix(deletion.value, newWsEnd);
+    endKeep.value = replacePrefix(endKeep.value, newWsFull, newWsEnd);
+    startKeep.value = replaceSuffix(startKeep.value, newWsFull, newWsFull.slice(0, newWsFull.length - newWsEnd.length));
+  } else if (endKeep) {
+    var endKeepWsPrefix = endKeep.value.match(/^\s*/)[0];
+    var deletionWsSuffix = deletion.value.match(/\s*$/)[0];
+    var overlap = maximumOverlap(deletionWsSuffix, endKeepWsPrefix);
+    deletion.value = removeSuffix(deletion.value, overlap);
+  } else if (startKeep) {
+    var startKeepWsSuffix = startKeep.value.match(/\s*$/)[0];
+    var deletionWsPrefix = deletion.value.match(/^\s*/)[0];
+    var _overlap = maximumOverlap(startKeepWsSuffix, deletionWsPrefix);
+    deletion.value = removePrefix(deletion.value, _overlap);
+  }
+}
+var wordWithSpaceDiff = new Diff();
+wordWithSpaceDiff.tokenize = function(value) {
+  var regex = new RegExp("(\\r?\\n)|[".concat(extendedWordChars, "]+|[^\\S\\n\\r]+|[^").concat(extendedWordChars, "]"), "ug");
+  return value.match(regex) || [];
+};
+function diffWordsWithSpace(oldStr, newStr, options) {
+  return wordWithSpaceDiff.diff(oldStr, newStr, options);
+}
+var lineDiff = new Diff();
+lineDiff.tokenize = function(value, options) {
+  if (options.stripTrailingCr) {
+    value = value.replace(/\r\n/g, "\n");
+  }
+  var retLines = [], linesAndNewlines = value.split(/(\n|\r\n)/);
+  if (!linesAndNewlines[linesAndNewlines.length - 1]) {
+    linesAndNewlines.pop();
+  }
+  for (var i = 0; i < linesAndNewlines.length; i++) {
+    var line = linesAndNewlines[i];
+    if (i % 2 && !options.newlineIsToken) {
+      retLines[retLines.length - 1] += line;
+    } else {
+      retLines.push(line);
+    }
+  }
+  return retLines;
+};
+lineDiff.equals = function(left, right, options) {
+  if (options.ignoreWhitespace) {
+    if (!options.newlineIsToken || !left.includes("\n")) {
+      left = left.trim();
+    }
+    if (!options.newlineIsToken || !right.includes("\n")) {
+      right = right.trim();
+    }
+  } else if (options.ignoreNewlineAtEof && !options.newlineIsToken) {
+    if (left.endsWith("\n")) {
+      left = left.slice(0, -1);
+    }
+    if (right.endsWith("\n")) {
+      right = right.slice(0, -1);
+    }
+  }
+  return Diff.prototype.equals.call(this, left, right, options);
+};
+var sentenceDiff = new Diff();
+sentenceDiff.tokenize = function(value) {
+  return value.split(/(\S.+?[.!?])(?=\s+|$)/);
+};
+var cssDiff = new Diff();
+cssDiff.tokenize = function(value) {
+  return value.split(/([{}:;,]|\s+)/);
+};
+function _typeof(o) {
+  "@babel/helpers - typeof";
+  return _typeof = "function" == typeof Symbol && "symbol" == typeof Symbol.iterator ? function(o2) {
+    return typeof o2;
+  } : function(o2) {
+    return o2 && "function" == typeof Symbol && o2.constructor === Symbol && o2 !== Symbol.prototype ? "symbol" : typeof o2;
+  }, _typeof(o);
+}
+var jsonDiff = new Diff();
+jsonDiff.useLongestToken = true;
+jsonDiff.tokenize = lineDiff.tokenize;
+jsonDiff.castInput = function(value, options) {
+  var undefinedReplacement = options.undefinedReplacement, _options$stringifyRep = options.stringifyReplacer, stringifyReplacer = _options$stringifyRep === void 0 ? function(k, v) {
+    return typeof v === "undefined" ? undefinedReplacement : v;
+  } : _options$stringifyRep;
+  return typeof value === "string" ? value : JSON.stringify(canonicalize(value, null, null, stringifyReplacer), stringifyReplacer, "  ");
+};
+jsonDiff.equals = function(left, right, options) {
+  return Diff.prototype.equals.call(jsonDiff, left.replace(/,([\r\n])/g, "$1"), right.replace(/,([\r\n])/g, "$1"), options);
+};
+function canonicalize(obj, stack, replacementStack, replacer, key) {
+  stack = stack || [];
+  replacementStack = replacementStack || [];
+  if (replacer) {
+    obj = replacer(key, obj);
+  }
+  var i;
+  for (i = 0; i < stack.length; i += 1) {
+    if (stack[i] === obj) {
+      return replacementStack[i];
+    }
+  }
+  var canonicalizedObj;
+  if ("[object Array]" === Object.prototype.toString.call(obj)) {
+    stack.push(obj);
+    canonicalizedObj = new Array(obj.length);
+    replacementStack.push(canonicalizedObj);
+    for (i = 0; i < obj.length; i += 1) {
+      canonicalizedObj[i] = canonicalize(obj[i], stack, replacementStack, replacer, key);
+    }
+    stack.pop();
+    replacementStack.pop();
+    return canonicalizedObj;
+  }
+  if (obj && obj.toJSON) {
+    obj = obj.toJSON();
+  }
+  if (_typeof(obj) === "object" && obj !== null) {
+    stack.push(obj);
+    canonicalizedObj = {};
+    replacementStack.push(canonicalizedObj);
+    var sortedKeys = [], _key;
+    for (_key in obj) {
+      if (Object.prototype.hasOwnProperty.call(obj, _key)) {
+        sortedKeys.push(_key);
+      }
+    }
+    sortedKeys.sort();
+    for (i = 0; i < sortedKeys.length; i += 1) {
+      _key = sortedKeys[i];
+      canonicalizedObj[_key] = canonicalize(obj[_key], stack, replacementStack, replacer, _key);
+    }
+    stack.pop();
+    replacementStack.pop();
+  } else {
+    canonicalizedObj = obj;
+  }
+  return canonicalizedObj;
+}
+var arrayDiff = new Diff();
+arrayDiff.tokenize = function(value) {
+  return value.slice();
+};
+arrayDiff.join = arrayDiff.removeEmpty = function(value) {
+  return value;
+};
+
+// src/diffview.ts
 var import_obsidian3 = require("obsidian");
+var MAX_DIFF_CHARS = 2e4;
+function renderInlineDiff(parent, original, revised) {
+  if (original === revised) {
+    parent.createEl("span", { text: revised });
+    parent.createEl("div", { text: "No changes.", cls: "skillwright-diff-note" });
+    return;
+  }
+  if (original.length + revised.length > MAX_DIFF_CHARS) {
+    parent.createEl("span", { text: revised });
+    parent.createEl("div", {
+      text: "Selection too large to diff \u2014 showing result only.",
+      cls: "skillwright-diff-note"
+    });
+    return;
+  }
+  const parts = diffWordsWithSpace(original, revised);
+  for (const part of parts) {
+    if (part.added) {
+      parent.createEl("span", { text: part.value, cls: "skillwright-ins" });
+    } else if (part.removed) {
+      parent.createEl("span", { text: part.value, cls: "skillwright-del" });
+    } else {
+      parent.createEl("span", { text: part.value });
+    }
+  }
+}
+
+// src/modals.ts
 var PROVIDER_LABELS = {
   ollama: "Ollama",
   openai: "OpenAI",
   anthropic: "Anthropic"
 };
-var RewriteModal = class extends import_obsidian3.Modal {
+var RewriteModal = class extends import_obsidian4.Modal {
   constructor(app, skills, defaults, onSubmit) {
     super(app);
     this.selectedSkill = null;
@@ -3073,7 +3657,7 @@ var RewriteModal = class extends import_obsidian3.Modal {
     const { contentEl } = this;
     contentEl.addClass("skillwright-modal");
     contentEl.createEl("h3", { text: "Rewrite selection" });
-    new import_obsidian3.Setting(contentEl).setName("Skill").setDesc("Optional. Loaded from your skills folder.").addDropdown((dd) => {
+    new import_obsidian4.Setting(contentEl).setName("Skill").setDesc("Optional. Loaded from your skills folder.").addDropdown((dd) => {
       dd.addOption("", "\u2014 none (instruction only) \u2014");
       for (const s of this.skills)
         dd.addOption(s.name, s.name);
@@ -3083,7 +3667,7 @@ var RewriteModal = class extends import_obsidian3.Modal {
       });
     });
     const descEl = contentEl.createEl("div", { cls: "skillwright-skill-desc" });
-    new import_obsidian3.Setting(contentEl).setName("Instruction").setDesc('e.g. "rewrite in Lab Notes voice", "tighten to half length"').addTextArea((ta) => {
+    new import_obsidian4.Setting(contentEl).setName("Instruction").setDesc('e.g. "rewrite in Lab Notes voice", "tighten to half length"').addTextArea((ta) => {
       ta.setPlaceholder("What should happen to the selection?");
       ta.inputEl.rows = 3;
       ta.inputEl.addClass("skillwright-instruction");
@@ -3094,7 +3678,7 @@ var RewriteModal = class extends import_obsidian3.Modal {
           this.submit();
       });
     });
-    new import_obsidian3.Setting(contentEl).setName("Provider / model").addDropdown((dd) => {
+    new import_obsidian4.Setting(contentEl).setName("Provider / model").addDropdown((dd) => {
       for (const [id, label] of Object.entries(PROVIDER_LABELS))
         dd.addOption(id, label);
       dd.setValue(this.provider);
@@ -3103,13 +3687,13 @@ var RewriteModal = class extends import_obsidian3.Modal {
       t.setPlaceholder("model override (optional)");
       t.onChange((v) => this.model = v.trim());
     });
-    new import_obsidian3.Setting(contentEl).addButton(
+    new import_obsidian4.Setting(contentEl).addButton(
       (b) => b.setButtonText("Rewrite (Ctrl+Enter)").setCta().onClick(() => this.submit())
     );
   }
   submit() {
     if (!this.selectedSkill && !this.instruction.trim()) {
-      new import_obsidian3.Notice("Pick a skill or type an instruction.");
+      new import_obsidian4.Notice("Pick a skill or type an instruction.");
       return;
     }
     this.close();
@@ -3124,53 +3708,152 @@ var RewriteModal = class extends import_obsidian3.Modal {
     this.contentEl.empty();
   }
 };
-var ResultModal = class extends import_obsidian3.Modal {
-  constructor(app, title, original, result, meta, onAction) {
+function fitToContent(ta) {
+  ta.style.height = "auto";
+  ta.style.height = `${ta.scrollHeight}px`;
+}
+var ResultModal = class extends import_obsidian4.Modal {
+  constructor(app, opts) {
     super(app);
-    this.title = title;
-    this.original = original;
-    this.result = result;
-    this.meta = meta;
-    this.edited = result;
-    this.onAction = onAction;
+    this.index = 0;
+    this.view = "diff";
+    this.busy = false;
+    this.closed = false;
+    this.title = opts.title;
+    this.original = opts.original;
+    this.onAction = opts.onAction;
+    this.onRerun = opts.onRerun;
+    this.attempts = [{ text: opts.first.text, edited: opts.first.text, meta: opts.first.meta }];
   }
   onOpen() {
     const { contentEl } = this;
     contentEl.addClass("skillwright-modal", "skillwright-result");
     contentEl.createEl("h3", { text: this.title });
-    const meta = contentEl.createEl("div", { cls: "skillwright-meta" });
-    meta.createEl("span", {
-      text: `${PROVIDER_LABELS[this.meta.provider] ?? this.meta.provider} \xB7 ${this.meta.model}`,
-      cls: "skillwright-meta-item"
+    this.metaEl = contentEl.createEl("div", { cls: "skillwright-meta" });
+    const toolbar = contentEl.createEl("div", { cls: "skillwright-toolbar" });
+    const toggle = toolbar.createEl("div", { cls: "skillwright-toggle" });
+    this.diffToggleBtn = toggle.createEl("button", { text: "Diff" });
+    this.diffToggleBtn.type = "button";
+    this.diffToggleBtn.addEventListener("click", () => {
+      this.view = "diff";
+      this.render();
     });
-    meta.createEl("span", {
-      text: this.meta.skill ? `Skill: ${this.meta.skill}` : "Skill: none (instruction only)",
-      cls: "skillwright-meta-item"
+    this.editToggleBtn = toggle.createEl("button", { text: "Edit" });
+    this.editToggleBtn.type = "button";
+    this.editToggleBtn.addEventListener("click", () => {
+      this.view = "edit";
+      this.render();
     });
-    contentEl.createEl("div", { text: "Original", cls: "skillwright-label" });
-    contentEl.createEl("div", { text: this.original, cls: "skillwright-original" });
-    contentEl.createEl("div", { text: "Result (editable)", cls: "skillwright-label" });
-    const ta = contentEl.createEl("textarea", { cls: "skillwright-result-text" });
-    ta.value = this.result;
-    ta.rows = Math.min(16, Math.max(4, this.result.split("\n").length + 1));
-    ta.addEventListener("input", () => this.edited = ta.value);
+    this.navEl = toolbar.createEl("div", { cls: "skillwright-nav" });
+    this.navPrevBtn = this.navEl.createEl("button", { text: "\u2039" });
+    this.navPrevBtn.type = "button";
+    this.navPrevBtn.addEventListener("click", () => {
+      if (this.index > 0) {
+        this.index -= 1;
+        this.render();
+      }
+    });
+    this.navLabelEl = this.navEl.createEl("span", { cls: "skillwright-nav-label" });
+    this.navNextBtn = this.navEl.createEl("button", { text: "\u203A" });
+    this.navNextBtn.type = "button";
+    this.navNextBtn.addEventListener("click", () => {
+      if (this.index < this.attempts.length - 1) {
+        this.index += 1;
+        this.render();
+      }
+    });
+    this.paneEl = contentEl.createEl("div", { cls: "skillwright-pane" });
     const row = contentEl.createEl("div", { cls: "skillwright-actions" });
-    new import_obsidian3.ButtonComponent(row).setButtonText("Replace").setCta().onClick(() => this.act("replace"));
-    new import_obsidian3.ButtonComponent(row).setButtonText("Insert below").onClick(() => this.act("insert"));
-    new import_obsidian3.ButtonComponent(row).setButtonText("Copy").onClick(() => this.act("copy"));
-    new import_obsidian3.ButtonComponent(row).setButtonText("Dismiss").onClick(() => this.act("dismiss"));
+    this.rerunButton = new import_obsidian4.ButtonComponent(row).setButtonText("Re-Run").onClick(() => this.rerun());
+    this.replaceButton = new import_obsidian4.ButtonComponent(row).setButtonText("Replace").setCta().onClick(() => this.act("replace"));
+    this.insertButton = new import_obsidian4.ButtonComponent(row).setButtonText("Insert below").onClick(() => this.act("insert"));
+    this.copyButton = new import_obsidian4.ButtonComponent(row).setButtonText("Copy").onClick(() => this.act("copy"));
+    this.dismissButton = new import_obsidian4.ButtonComponent(row).setButtonText("Dismiss").onClick(() => this.act("dismiss"));
+    this.render();
+  }
+  /** Repaints meta chips, toggle state, nav, and the diff/edit pane for the current attempt. */
+  render() {
+    const current = this.attempts[this.index];
+    this.metaEl.empty();
+    this.metaEl.createEl("span", {
+      text: `${PROVIDER_LABELS[current.meta.provider] ?? current.meta.provider} \xB7 ${current.meta.model}`,
+      cls: "skillwright-meta-item"
+    });
+    this.metaEl.createEl("span", {
+      text: current.meta.skill ? `Skill: ${current.meta.skill}` : "Skill: none (instruction only)",
+      cls: "skillwright-meta-item"
+    });
+    this.diffToggleBtn.toggleClass("is-active", this.view === "diff");
+    this.editToggleBtn.toggleClass("is-active", this.view === "edit");
+    const multi = this.attempts.length > 1;
+    this.navEl.style.display = multi ? "" : "none";
+    this.navPrevBtn.disabled = this.busy || this.index === 0;
+    this.navNextBtn.disabled = this.busy || this.index === this.attempts.length - 1;
+    this.navLabelEl.setText(`attempt ${this.index + 1} / ${this.attempts.length}`);
+    this.paneEl.empty();
+    this.paneEl.toggleClass("skillwright-pane-edit", this.view === "edit");
+    if (this.view === "diff") {
+      renderInlineDiff(this.paneEl, this.original, current.edited);
+    } else {
+      this.paneEl.createEl("div", { text: "Original", cls: "skillwright-label" });
+      this.paneEl.createEl("div", { text: this.original, cls: "skillwright-original" });
+      this.paneEl.createEl("div", { text: "Result (editable)", cls: "skillwright-label" });
+      const ta = this.paneEl.createEl("textarea", { cls: "skillwright-result-text" });
+      ta.value = current.edited;
+      ta.addEventListener("input", () => {
+        this.attempts[this.index].edited = ta.value;
+        fitToContent(ta);
+      });
+      fitToContent(ta);
+      window.setTimeout(() => fitToContent(ta), 0);
+    }
+  }
+  setActionsEnabled(enabled) {
+    this.replaceButton.setDisabled(!enabled);
+    this.insertButton.setDisabled(!enabled);
+    this.copyButton.setDisabled(!enabled);
+    this.dismissButton.setDisabled(!enabled);
+    this.navPrevBtn.disabled = !enabled || this.index === 0;
+    this.navNextBtn.disabled = !enabled || this.index === this.attempts.length - 1;
+  }
+  async rerun() {
+    if (this.busy)
+      return;
+    this.busy = true;
+    this.rerunButton.setDisabled(true);
+    this.rerunButton.setButtonText("Re-running\u2026");
+    this.setActionsEnabled(false);
+    try {
+      const { text, meta } = await this.onRerun();
+      if (this.closed)
+        return;
+      this.attempts.push({ text, edited: text, meta });
+      this.index = this.attempts.length - 1;
+      this.render();
+    } catch (e) {
+      if (!this.closed)
+        new import_obsidian4.Notice(`Skillwright error: ${e.message}`, 8e3);
+    } finally {
+      if (!this.closed) {
+        this.busy = false;
+        this.rerunButton.setDisabled(false);
+        this.rerunButton.setButtonText("Re-Run");
+        this.setActionsEnabled(true);
+      }
+    }
   }
   act(action) {
     this.close();
-    this.onAction(action, this.edited);
+    this.onAction(action, this.attempts[this.index].edited);
   }
   onClose() {
+    this.closed = true;
     this.contentEl.empty();
   }
 };
 
 // src/settings.ts
-var import_obsidian4 = require("obsidian");
+var import_obsidian5 = require("obsidian");
 var DEFAULT_SETTINGS = {
   defaultProvider: "ollama",
   skillsFolder: "_skills",
@@ -3181,7 +3864,7 @@ var DEFAULT_SETTINGS = {
   openai: { baseUrl: "https://api.openai.com", apiKey: "", model: "gpt-4o-mini" },
   anthropic: { baseUrl: "https://api.anthropic.com", apiKey: "", model: "claude-sonnet-4-6" }
 };
-var SkillwrightSettingTab = class extends import_obsidian4.PluginSettingTab {
+var SkillwrightSettingTab = class extends import_obsidian5.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -3190,7 +3873,7 @@ var SkillwrightSettingTab = class extends import_obsidian4.PluginSettingTab {
     const { containerEl } = this;
     const s = this.plugin.settings;
     containerEl.empty();
-    new import_obsidian4.Setting(containerEl).setName("Default provider").addDropdown((dd) => {
+    new import_obsidian5.Setting(containerEl).setName("Default provider").addDropdown((dd) => {
       dd.addOption("ollama", "Ollama");
       dd.addOption("openai", "OpenAI");
       dd.addOption("anthropic", "Anthropic");
@@ -3200,13 +3883,13 @@ var SkillwrightSettingTab = class extends import_obsidian4.PluginSettingTab {
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian4.Setting(containerEl).setName("Skills folder").setDesc("Vault folder containing Claude Code-style skills (subfolders with SKILL.md).").addText(
+    new import_obsidian5.Setting(containerEl).setName("Skills folder").setDesc("Vault folder containing Claude Code-style skills (subfolders with SKILL.md).").addText(
       (t) => t.setValue(s.skillsFolder).onChange(async (v) => {
         s.skillsFolder = v.trim() || "_skills";
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian4.Setting(containerEl).setName("Temperature").addText(
+    new import_obsidian5.Setting(containerEl).setName("Temperature").addText(
       (t) => t.setValue(String(s.temperature)).onChange(async (v) => {
         const n = Number(v);
         if (!Number.isNaN(n))
@@ -3214,7 +3897,7 @@ var SkillwrightSettingTab = class extends import_obsidian4.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian4.Setting(containerEl).setName("Max output tokens").addText(
+    new import_obsidian5.Setting(containerEl).setName("Max output tokens").addText(
       (t) => t.setValue(String(s.maxTokens)).onChange(async (v) => {
         const n = parseInt(v, 10);
         if (!Number.isNaN(n) && n > 0)
@@ -3222,7 +3905,7 @@ var SkillwrightSettingTab = class extends import_obsidian4.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian4.Setting(containerEl).setName("Reference budget (characters)").setDesc(
+    new import_obsidian5.Setting(containerEl).setName("Reference budget (characters)").setDesc(
       "Cap on the reference files a skill pulls into the prompt. Files past the cap are skipped, with a notice."
     ).addText(
       (t) => t.setValue(String(s.refBudgetChars)).onChange(async (v) => {
@@ -3233,53 +3916,53 @@ var SkillwrightSettingTab = class extends import_obsidian4.PluginSettingTab {
       })
     );
     containerEl.createEl("h3", { text: "Ollama" });
-    new import_obsidian4.Setting(containerEl).setName("Base URL").addText(
+    new import_obsidian5.Setting(containerEl).setName("Base URL").addText(
       (t) => t.setValue(s.ollama.baseUrl).onChange(async (v) => {
         s.ollama.baseUrl = v.trim();
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian4.Setting(containerEl).setName("Model").addText(
+    new import_obsidian5.Setting(containerEl).setName("Model").addText(
       (t) => t.setValue(s.ollama.model).onChange(async (v) => {
         s.ollama.model = v.trim();
         await this.plugin.saveSettings();
       })
     );
     containerEl.createEl("h3", { text: "OpenAI" });
-    new import_obsidian4.Setting(containerEl).setName("API key").setDesc("Stored in plain text in this vault's plugin data. Don't sync it anywhere you don't trust.").addText((t) => {
+    new import_obsidian5.Setting(containerEl).setName("API key").setDesc("Stored in plain text in this vault's plugin data. Don't sync it anywhere you don't trust.").addText((t) => {
       t.inputEl.type = "password";
       t.setValue(s.openai.apiKey).onChange(async (v) => {
         s.openai.apiKey = v.trim();
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian4.Setting(containerEl).setName("Base URL").addText(
+    new import_obsidian5.Setting(containerEl).setName("Base URL").addText(
       (t) => t.setValue(s.openai.baseUrl).onChange(async (v) => {
         s.openai.baseUrl = v.trim();
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian4.Setting(containerEl).setName("Model").addText(
+    new import_obsidian5.Setting(containerEl).setName("Model").addText(
       (t) => t.setValue(s.openai.model).onChange(async (v) => {
         s.openai.model = v.trim();
         await this.plugin.saveSettings();
       })
     );
     containerEl.createEl("h3", { text: "Anthropic" });
-    new import_obsidian4.Setting(containerEl).setName("API key").setDesc("Stored in plain text in this vault's plugin data.").addText((t) => {
+    new import_obsidian5.Setting(containerEl).setName("API key").setDesc("Stored in plain text in this vault's plugin data.").addText((t) => {
       t.inputEl.type = "password";
       t.setValue(s.anthropic.apiKey).onChange(async (v) => {
         s.anthropic.apiKey = v.trim();
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian4.Setting(containerEl).setName("Base URL").addText(
+    new import_obsidian5.Setting(containerEl).setName("Base URL").addText(
       (t) => t.setValue(s.anthropic.baseUrl).onChange(async (v) => {
         s.anthropic.baseUrl = v.trim();
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian4.Setting(containerEl).setName("Model").addText(
+    new import_obsidian5.Setting(containerEl).setName("Model").addText(
       (t) => t.setValue(s.anthropic.model).onChange(async (v) => {
         s.anthropic.model = v.trim();
         await this.plugin.saveSettings();
@@ -3296,7 +3979,7 @@ var SYSTEM_BASE = [
   "no quotation marks around the result. Preserve markdown formatting unless the",
   "task says otherwise. Match the original's language unless asked to translate."
 ].join(" ");
-var SkillwrightPlugin = class extends import_obsidian5.Plugin {
+var SkillwrightPlugin = class extends import_obsidian6.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
@@ -3319,7 +4002,7 @@ var SkillwrightPlugin = class extends import_obsidian5.Plugin {
       name: "List loaded skills",
       callback: async () => {
         const skills = await this.getSkills();
-        new import_obsidian5.Notice(
+        new import_obsidian6.Notice(
           skills.length ? `${skills.length} skill(s): ${skills.map((s) => s.name).join(", ")}` : `No skills found in "${this.settings.skillsFolder}".`
         );
       }
@@ -3340,7 +4023,7 @@ var SkillwrightPlugin = class extends import_obsidian5.Plugin {
   async startRewrite(editor) {
     const selection = editor.getSelection();
     if (!selection) {
-      new import_obsidian5.Notice("Select some text first.");
+      new import_obsidian6.Notice("Select some text first.");
       return;
     }
     const skills = await this.getSkills();
@@ -3355,11 +4038,11 @@ var SkillwrightPlugin = class extends import_obsidian5.Plugin {
       if (choice.model)
         cfg.model = choice.model;
       if (!cfg.model) {
-        new import_obsidian5.Notice(`No model configured for ${provider}.`);
+        new import_obsidian6.Notice(`No model configured for ${provider}.`);
         return;
       }
       if (provider !== "ollama" && !("apiKey" in cfg && cfg.apiKey)) {
-        new import_obsidian5.Notice(`No API key configured for ${provider}.`);
+        new import_obsidian6.Notice(`No API key configured for ${provider}.`);
         return;
       }
       const { system, skipped, missing } = await this.buildSystem(choice.skill);
@@ -3369,33 +4052,26 @@ var SkillwrightPlugin = class extends import_obsidian5.Plugin {
           skipped.length ? `${skipped.length} reference(s) over budget (${skipped.join(", ")})` : "",
           missing.length ? `${missing.length} not found (${missing.join(", ")})` : ""
         ].filter(Boolean);
-        new import_obsidian5.Notice(`Skillwright: ${warnings.join("; ")}.`, 8e3);
+        new import_obsidian6.Notice(`Skillwright: ${warnings.join("; ")}.`, 8e3);
       }
-      const notice = new import_obsidian5.Notice(`Skillwright: asking ${provider} (${cfg.model})\u2026`, 0);
-      try {
-        const result = await chat(provider, {
-          baseUrl: cfg.baseUrl,
-          apiKey: cfg.apiKey ?? "",
-          model: cfg.model
-        }, {
-          system,
-          user,
-          temperature: s.temperature,
-          maxTokens: s.maxTokens
-        });
-        notice.hide();
-        if (!result.trim()) {
-          new import_obsidian5.Notice("Empty response from model.");
-          return;
-        }
-        this.showResult(editor, selection, result.trim(), choice, {
+      const runOnce = async () => {
+        const text = (await chat(
           provider,
-          model: cfg.model,
-          skill: choice.skill?.name ?? null
-        });
+          { baseUrl: cfg.baseUrl, apiKey: cfg.apiKey ?? "", model: cfg.model },
+          { system, user, temperature: s.temperature, maxTokens: s.maxTokens }
+        )).trim();
+        if (!text)
+          throw new Error("Empty response from model.");
+        return { text, meta: { provider, model: cfg.model, skill: choice.skill?.name ?? null } };
+      };
+      const notice = new import_obsidian6.Notice(`Skillwright: asking ${provider} (${cfg.model})\u2026`, 0);
+      try {
+        const first = await runOnce();
+        notice.hide();
+        this.showResult(editor, selection, choice, first, runOnce);
       } catch (e) {
         notice.hide();
-        new import_obsidian5.Notice(`Skillwright error: ${e.message}`, 8e3);
+        new import_obsidian6.Notice(`Skillwright error: ${e.message}`, 8e3);
       }
     }).open();
   }
@@ -3434,26 +4110,35 @@ var SkillwrightPlugin = class extends import_obsidian5.Plugin {
     const task = instruction || (skill ? `Apply the "${skill.name}" skill to the passage.` : "Improve the passage.");
     return [`Task: ${task}`, "", "Passage:", "<<<", selection, ">>>"].join("\n");
   }
-  showResult(editor, original, result, choice, meta) {
+  showResult(editor, original, choice, first, onRerun) {
     const title = choice.skill ? `Result \u2014 ${choice.skill.name}` : "Result";
-    new ResultModal(this.app, title, original, result, meta, async (action, text) => {
-      switch (action) {
-        case "replace":
-          editor.replaceSelection(text);
-          break;
-        case "insert": {
-          const to = editor.getCursor("to");
-          editor.replaceRange(`
+    new ResultModal(this.app, {
+      title,
+      original,
+      first,
+      onRerun,
+      onAction: async (action, text) => {
+        switch (action) {
+          case "replace":
+            editor.replaceSelection(text);
+            break;
+          case "insert": {
+            const to = editor.getCursor("to");
+            editor.replaceRange(`
 
-${text}`, { line: to.line, ch: editor.getLine(to.line).length });
-          break;
+${text}`, {
+              line: to.line,
+              ch: editor.getLine(to.line).length
+            });
+            break;
+          }
+          case "copy":
+            await navigator.clipboard.writeText(text);
+            new import_obsidian6.Notice("Copied.");
+            break;
+          case "dismiss":
+            break;
         }
-        case "copy":
-          await navigator.clipboard.writeText(text);
-          new import_obsidian5.Notice("Copied.");
-          break;
-        case "dismiss":
-          break;
       }
     }).open();
   }
@@ -3468,9 +4153,9 @@ ${text}`, { line: to.line, ch: editor.getLine(to.line).length });
       try {
         const buf = await file.arrayBuffer();
         const n = await importSkillsZip(this.app, this.settings.skillsFolder, buf);
-        new import_obsidian5.Notice(`Imported ${n} file(s) into "${this.settings.skillsFolder}".`);
+        new import_obsidian6.Notice(`Imported ${n} file(s) into "${this.settings.skillsFolder}".`);
       } catch (e) {
-        new import_obsidian5.Notice(`Zip import failed: ${e.message}`, 8e3);
+        new import_obsidian6.Notice(`Zip import failed: ${e.message}`, 8e3);
       }
     };
     input.click();
