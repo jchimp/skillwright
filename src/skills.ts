@@ -209,21 +209,34 @@ export async function resolveSkillRefs(
         if (visited.has(path)) continue;
         visited.add(path);
 
-        const file = app.vault.getAbstractFileByPath(path);
+        let file = app.vault.getAbstractFileByPath(path);
+
+        // A bare prose mention ("see BRAND.md") carries no path, so it lands next to
+        // SKILL.md even when the real file sits in references/. Search the skill folder
+        // by basename before calling it missing.
+        if (!(file instanceof TFile) && !target.includes("/")) {
+          const found = findByBasename(app, skill.folder, path.split("/").pop() ?? "");
+          if (found) {
+            if (visited.has(found.path)) continue;
+            visited.add(found.path);
+            file = found;
+          }
+        }
+
         if (!(file instanceof TFile)) {
           reportMissing(target);
           continue;
         }
 
         const body = (await app.vault.cachedRead(file)).trim();
-        const name = relativeName(path, skill.folder);
+        const name = relativeName(file.path, skill.folder);
         if (used + body.length > budgetChars) {
           skipped.push(name);
           continue; // skip whole files, never truncate mid-rule
         }
         used += body.length;
 
-        refs.push({ path, name, body });
+        refs.push({ path: file.path, name, body });
         next.push({ body, folder: file.parent?.path ?? node.folder });
       }
     }
@@ -232,6 +245,24 @@ export async function resolveSkillRefs(
   }
 
   return { refs, skipped, missing };
+}
+
+/** Depth-first search of a skill folder for a file with the given name (case-insensitive). */
+function findByBasename(app: App, skillFolder: string, basename: string): TFile | null {
+  if (!basename) return null;
+  const root = app.vault.getAbstractFileByPath(normalizePath(skillFolder));
+  if (!(root instanceof TFolder)) return null;
+
+  const want = basename.toLowerCase();
+  const stack: TFolder[] = [root];
+  while (stack.length > 0) {
+    const folder = stack.pop() as TFolder;
+    for (const child of folder.children) {
+      if (child instanceof TFile && child.name.toLowerCase() === want) return child;
+      if (child instanceof TFolder) stack.push(child);
+    }
+  }
+  return null;
 }
 
 function relativeName(path: string, folder: string): string {
@@ -256,11 +287,15 @@ export async function importSkillsZip(
     return 0;
   }
 
-  // Detect a single wrapping directory and strip it.
+  // Detect a single wrapping directory and strip it — unless that directory is itself
+  // a skill (holds SKILL.md), which is what a single-skill zip looks like. Stripping
+  // there would flatten the skill into the skills folder root.
   const tops = new Set(entries.map((e) => e.name.split("/")[0]));
+  const top = [...tops][0];
+  const topIsSkill = entries.some((e) => e.name.toLowerCase() === `${top.toLowerCase()}/skill.md`);
   const strip =
-    tops.size === 1 && entries.every((e) => e.name.includes("/"))
-      ? `${[...tops][0]}/`
+    tops.size === 1 && !topIsSkill && entries.every((e) => e.name.includes("/"))
+      ? `${top}/`
       : "";
 
   await ensureFolder(app, skillsFolder);
