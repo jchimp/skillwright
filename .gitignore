@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# Obsidian plugin runtime state. The README recommends symlinking this repo into
+# <vault>/.obsidian/plugins/ for development, which makes Obsidian write these
+# files here — data.json holds API keys in plain text.
+data.json
+.hotreload
+
+# Build output. main.js and styles.css are tracked on purpose: an Obsidian
+# plugin ships its bundle, so releases install straight from the repo.
+*.js.map
+*.tsbuildinfo
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs and local env
+*.log
+npm-debug.log*
+.env
+.env.local
