@@ -112,7 +112,3 @@ Two caveats to that:
 Beyond that, skim a skill from a stranger before running it, the same as any script — it's instructions to a model, and it's your API budget.
 
 Zip import enforces the same containment: entries resolving outside the skills folder are refused and named in the import notice, so a zip that tries to overwrite plugin code or config can't.
-
-## Notes / caveats
-
-- The modal's model field is pre-filled with the selected provider's configured model, and re-fills when you switch providers. Edit it to override for one rewrite; blank falls back to the settings default.
