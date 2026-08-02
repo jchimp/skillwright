@@ -1,7 +1,7 @@
 {
   "id": "skillwright",
   "name": "Skillwright",
-  "version": "0.3.0",
+  "version": "0.5.0",
   "minAppVersion": "1.5.0",
   "description": "Rewrite selected text with LLMs (Ollama, OpenAI, Anthropic) using Claude Code-style skills (SKILL.md folders, zip-importable).",
   "author": "Jeremy Champion",
