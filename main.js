@@ -3522,6 +3522,9 @@ lineDiff.equals = function(left, right, options) {
   }
   return Diff.prototype.equals.call(this, left, right, options);
 };
+function diffLines(oldStr, newStr, callback) {
+  return lineDiff.diff(oldStr, newStr, callback);
+}
 var sentenceDiff = new Diff();
 sentenceDiff.tokenize = function(value) {
   return value.split(/(\S.+?[.!?])(?=\s+|$)/);
@@ -3610,28 +3613,106 @@ arrayDiff.join = arrayDiff.removeEmpty = function(value) {
 // src/diffview.ts
 var import_obsidian3 = require("obsidian");
 var MAX_DIFF_CHARS = 2e4;
-function renderInlineDiff(parent, original, revised) {
+function toLines(value) {
+  const lines = value.split("\n");
+  if (lines.length > 1 && lines[lines.length - 1] === "")
+    lines.pop();
+  return lines;
+}
+function buildRows(original, revised) {
+  const rows = [];
+  let leftNo = 1;
+  let rightNo = 1;
+  const flush = (removed, added) => {
+    const n = Math.max(removed.length, added.length);
+    for (let i = 0; i < n; i++) {
+      const l = i < removed.length ? removed[i] : null;
+      const r = i < added.length ? added[i] : null;
+      rows.push({
+        kind: l !== null && r !== null ? "changed" : l !== null ? "removed" : "added",
+        left: l,
+        right: r,
+        leftNo: l !== null ? leftNo++ : null,
+        rightNo: r !== null ? rightNo++ : null
+      });
+    }
+  };
+  const parts = diffLines(original, revised);
+  let pendingRemoved = [];
+  for (const part of parts) {
+    const lines = toLines(part.value);
+    if (part.removed) {
+      pendingRemoved = pendingRemoved.concat(lines);
+      continue;
+    }
+    if (part.added) {
+      flush(pendingRemoved, lines);
+      pendingRemoved = [];
+      continue;
+    }
+    flush(pendingRemoved, []);
+    pendingRemoved = [];
+    for (const line of lines) {
+      rows.push({ kind: "equal", left: line, right: line, leftNo: leftNo++, rightNo: rightNo++ });
+    }
+  }
+  flush(pendingRemoved, []);
+  return rows;
+}
+function renderCellText(cell, text, counterpart, side) {
+  for (const part of diffWordsWithSpace(counterpart, text)) {
+    const isChange = side === "right" ? part.added : part.removed;
+    const isOther = side === "right" ? part.removed : part.added;
+    if (isOther)
+      continue;
+    cell.createEl("span", {
+      text: part.value,
+      cls: isChange ? side === "right" ? "skillwright-ins" : "skillwright-del" : void 0
+    });
+  }
+}
+function renderSideBySideDiff(parent, original, revised) {
   if (original === revised) {
-    parent.createEl("span", { text: revised });
+    parent.createEl("div", { text: revised, cls: "skillwright-diff-plain" });
     parent.createEl("div", { text: "No changes.", cls: "skillwright-diff-note" });
     return;
   }
   if (original.length + revised.length > MAX_DIFF_CHARS) {
-    parent.createEl("span", { text: revised });
+    parent.createEl("div", { text: revised, cls: "skillwright-diff-plain" });
     parent.createEl("div", {
       text: "Selection too large to diff \u2014 showing result only.",
       cls: "skillwright-diff-note"
     });
     return;
   }
-  const parts = diffWordsWithSpace(original, revised);
-  for (const part of parts) {
-    if (part.added) {
-      parent.createEl("span", { text: part.value, cls: "skillwright-ins" });
-    } else if (part.removed) {
-      parent.createEl("span", { text: part.value, cls: "skillwright-del" });
+  const grid = parent.createEl("div", { cls: "skillwright-sbs" });
+  grid.createEl("div", { cls: "skillwright-sbs-gutter skillwright-sbs-head" });
+  grid.createEl("div", { text: "Original", cls: "skillwright-sbs-title skillwright-sbs-head" });
+  grid.createEl("div", { cls: "skillwright-sbs-gutter skillwright-sbs-head" });
+  grid.createEl("div", { text: "Result", cls: "skillwright-sbs-title skillwright-sbs-head" });
+  for (const row of buildRows(original, revised)) {
+    grid.createEl("div", {
+      text: row.leftNo === null ? "" : String(row.leftNo),
+      cls: "skillwright-sbs-gutter"
+    });
+    const left = grid.createEl("div", { cls: `skillwright-sbs-cell is-left is-${row.kind}` });
+    grid.createEl("div", {
+      text: row.rightNo === null ? "" : String(row.rightNo),
+      cls: "skillwright-sbs-gutter"
+    });
+    const right = grid.createEl("div", { cls: `skillwright-sbs-cell is-right is-${row.kind}` });
+    if (row.left === null)
+      left.addClass("is-filler");
+    if (row.right === null)
+      right.addClass("is-filler");
+    if (row.kind === "changed") {
+      renderCellText(left, row.left, row.right, "left");
+      renderCellText(right, row.right, row.left, "right");
     } else {
-      parent.createEl("span", { text: part.value });
+      if (row.left !== null)
+        left.setText(row.left);
+      if (row.right !== null)
+        right.setText(row.right);
     }
   }
 }
@@ -3793,7 +3874,7 @@ var ResultModal = class extends import_obsidian4.Modal {
     this.paneEl.empty();
     this.paneEl.toggleClass("skillwright-pane-edit", this.view === "edit");
     if (this.view === "diff") {
-      renderInlineDiff(this.paneEl, this.original, current.edited);
+      renderSideBySideDiff(this.paneEl, this.original, current.edited);
     } else {
       this.paneEl.createEl("div", { text: "Original", cls: "skillwright-label" });
       this.paneEl.createEl("div", { text: this.original, cls: "skillwright-original" });

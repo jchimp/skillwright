@@ -1,7 +1,7 @@
 import { App, ButtonComponent, Modal, Notice, Setting } from "obsidian";
 import type { Skill } from "./skills";
 import type { ProviderId } from "./providers";
-import { renderInlineDiff } from "./diffview";
+import { renderSideBySideDiff } from "./diffview";
 
 const PROVIDER_LABELS: Record<ProviderId, string> = {
   ollama: "Ollama",
@@ -275,7 +275,7 @@ export class ResultModal extends Modal {
     // Edit mode's children carry their own chrome, so the pane drops its own.
     this.paneEl.toggleClass("skillwright-pane-edit", this.view === "edit");
     if (this.view === "diff") {
-      renderInlineDiff(this.paneEl, this.original, current.edited);
+      renderSideBySideDiff(this.paneEl, this.original, current.edited);
     } else {
       this.paneEl.createEl("div", { text: "Original", cls: "skillwright-label" });
       this.paneEl.createEl("div", { text: this.original, cls: "skillwright-original" });

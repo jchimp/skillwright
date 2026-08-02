@@ -13,8 +13,8 @@
 /* Obsidian's default modal is sized for settings forms, which is too narrow for
    prose. Degrades to the default width where :has() is unsupported. */
 .modal:has(.skillwright-result) {
-  width: min(880px, 92vw);
-  max-width: 92vw;
+  width: min(1100px, 94vw);
+  max-width: 94vw;
 }
 
 .skillwright-result .skillwright-meta {
@@ -178,4 +178,82 @@
   font-size: var(--font-ui-smaller);
   color: var(--text-muted);
   font-style: italic;
+}
+
+/* Side-by-side diff. Line-number gutters size to content; the two text columns
+   split the rest evenly so long lines wrap instead of scrolling sideways. */
+.skillwright-result .skillwright-pane .skillwright-sbs {
+  display: grid;
+  grid-template-columns: min-content minmax(0, 1fr) min-content minmax(0, 1fr);
+  align-items: stretch;
+  font-size: var(--font-ui-small);
+}
+
+.skillwright-result .skillwright-pane .skillwright-sbs-head {
+  position: sticky;
+  top: -8px; /* cancels the pane's own top padding so rows slide fully under */
+  z-index: 1;
+  background: var(--background-secondary);
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.skillwright-result .skillwright-pane .skillwright-sbs-title {
+  padding: 2px 8px 4px;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.skillwright-result .skillwright-pane .skillwright-sbs-gutter {
+  padding: 0 6px;
+  text-align: right;
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+
+.skillwright-result .skillwright-pane .skillwright-sbs-cell {
+  padding: 0 8px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* An empty line still needs to occupy a row so both columns stay aligned. */
+.skillwright-result .skillwright-pane .skillwright-sbs-cell::after {
+  content: "\200b";
+}
+
+.skillwright-result .skillwright-pane .skillwright-sbs-cell.is-filler {
+  background: var(--background-modifier-hover);
+}
+
+/* Rows carry only a faint wash so the eye can find them while scrolling; the
+   word-level marks below are what actually carry the red/green signal. */
+.skillwright-result .skillwright-pane .skillwright-sbs-cell.is-left.is-changed {
+  background: color-mix(in srgb, var(--background-modifier-error) 22%, transparent);
+}
+
+.skillwright-result .skillwright-pane .skillwright-sbs-cell.is-right.is-changed {
+  background: color-mix(in srgb, var(--background-modifier-success) 22%, transparent);
+}
+
+/* A wholly added or removed line has no word marks to carry the signal, so the
+   cell itself takes the full-strength tint. */
+.skillwright-result .skillwright-pane .skillwright-sbs-cell.is-left.is-removed {
+  background: var(--background-modifier-error);
+}
+
+.skillwright-result .skillwright-pane .skillwright-sbs-cell.is-right.is-added {
+  background: var(--background-modifier-success);
+}
+
+.skillwright-result .skillwright-pane .skillwright-sbs .skillwright-del {
+  text-decoration: none;
+  opacity: 1;
+}
+
+.skillwright-result .skillwright-pane .skillwright-diff-plain {
+  white-space: pre-wrap;
 }
