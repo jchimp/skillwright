@@ -62,6 +62,8 @@ For development: symlink the repo into the plugins folder and use `npm run dev` 
 - **Import skills from zip…**
 - **List loaded skills**
 
+All three are bindable. Settings → Skillwright → **Hotkeys** lists them with their current bindings and a button that jumps straight to Obsidian's Hotkeys pane, pre-filtered to Skillwright.
+
 ## Notes / caveats
 
 - API keys are stored **in plain text** in `data.json` in the vault's plugin folder. Don't sync the vault anywhere untrusted, or use Ollama.

@@ -1,6 +1,12 @@
 import { App, PluginSettingTab, Setting } from "obsidian";
 import type SkillwrightPlugin from "./main";
 import type { ProviderId } from "./providers";
+import {
+  formatHotkey,
+  getHotkeyManager,
+  getSettingManager,
+  pluginCommands,
+} from "./obsidian-internal";
 
 export interface SkillwrightSettings {
   defaultProvider: ProviderId;
@@ -155,5 +161,63 @@ export class SkillwrightSettingTab extends PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
+
+    this.renderHotkeys(containerEl);
   }
+
+  /**
+   * List this plugin's commands with their current bindings. Bindings live in
+   * Obsidian's own config, so nothing here is persisted to plugin settings —
+   * the buttons just shortcut to the Hotkeys pane.
+   *
+   * @param containerEl Element to append the section to.
+   */
+  private renderHotkeys(containerEl: HTMLElement): void {
+    containerEl.createEl("h3", { text: "Hotkeys" });
+
+    const cmds = pluginCommands(this.app, this.plugin.manifest.id);
+    const hotkeys = getHotkeyManager(this.app);
+
+    if (!cmds.length || !hotkeys) {
+      this.addHotkeyPaneButton(
+        new Setting(containerEl).setDesc(
+          'Assign keys under Settings → Hotkeys, searching for "Skillwright".'
+        )
+      );
+      return;
+    }
+
+    for (const cmd of cmds) {
+      const custom = hotkeys.getHotkeys(cmd.id);
+      const bound = custom?.length ? custom : hotkeys.getDefaultHotkeys(cmd.id);
+      const isDefault = !custom?.length && !!bound?.length;
+
+      const desc = bound?.length
+        ? bound.map(formatHotkey).join(", ") + (isDefault ? " (default)" : "")
+        : "Not set";
+
+      this.addHotkeyPaneButton(
+        new Setting(containerEl).setName(stripPluginPrefix(cmd.name)).setDesc(desc)
+      );
+    }
+  }
+
+  /** Adds the button that jumps to Obsidian's Hotkeys pane, pre-filtered to this plugin. */
+  private addHotkeyPaneButton(setting: Setting): void {
+    const settingMgr = getSettingManager(this.app);
+    if (!settingMgr) return;
+    setting.addButton((b) =>
+      b.setButtonText("Set hotkey").onClick(() => {
+        const tab = settingMgr.openTabById("hotkeys");
+        // setQuery is internal and may not exist; the pane still opens without it.
+        tab?.setQuery?.("skillwright");
+      })
+    );
+  }
+}
+
+/** Obsidian prefixes command names with the plugin name; drop it for an in-plugin list. */
+function stripPluginPrefix(name: string): string {
+  const sep = name.indexOf(": ");
+  return sep === -1 ? name : name.slice(sep + 2);
 }
