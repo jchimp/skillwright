@@ -2731,7 +2731,7 @@ __export(main_exports, {
   default: () => SkillwrightPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian6 = require("obsidian");
+var import_obsidian7 = require("obsidian");
 
 // src/providers.ts
 var import_obsidian = require("obsidian");
@@ -4288,7 +4288,62 @@ var ResultModal = class extends import_obsidian4.Modal {
 };
 
 // src/settings.ts
+var import_obsidian6 = require("obsidian");
+
+// src/obsidian-internal.ts
 var import_obsidian5 = require("obsidian");
+function internals(app) {
+  return app;
+}
+function getHotkeyManager(app) {
+  const m = internals(app).hotkeyManager;
+  if (!m || typeof m.getHotkeys !== "function" || typeof m.getDefaultHotkeys !== "function") {
+    return null;
+  }
+  return m;
+}
+function getSettingManager(app) {
+  const m = internals(app).setting;
+  if (!m || typeof m.openTabById !== "function")
+    return null;
+  return m;
+}
+function getCommandManager(app) {
+  const m = internals(app).commands;
+  if (!m || typeof m.listCommands !== "function")
+    return null;
+  return m;
+}
+function pluginCommands(app, manifestId) {
+  const cmds = getCommandManager(app);
+  if (!cmds)
+    return [];
+  const prefix = `${manifestId}:`;
+  return cmds.listCommands().filter((c) => c.id.startsWith(prefix));
+}
+var MAC_GLYPHS = {
+  Mod: "\u2318",
+  Meta: "\u2318",
+  Ctrl: "\u2303",
+  Alt: "\u2325",
+  Shift: "\u21E7"
+};
+var PC_NAMES = {
+  Mod: "Ctrl",
+  Meta: "Win",
+  Ctrl: "Ctrl",
+  Alt: "Alt",
+  Shift: "Shift"
+};
+function formatHotkey(hk) {
+  const key = hk.key.length === 1 ? hk.key.toUpperCase() : hk.key;
+  if (import_obsidian5.Platform.isMacOS) {
+    return hk.modifiers.map((m) => MAC_GLYPHS[m] ?? m).join("") + key;
+  }
+  return [...hk.modifiers.map((m) => PC_NAMES[m] ?? m), key].join(" + ");
+}
+
+// src/settings.ts
 var DEFAULT_SETTINGS = {
   defaultProvider: "ollama",
   skillsFolder: "_skills",
@@ -4299,7 +4354,7 @@ var DEFAULT_SETTINGS = {
   openai: { baseUrl: "https://api.openai.com", apiKey: "", model: "gpt-4o-mini" },
   anthropic: { baseUrl: "https://api.anthropic.com", apiKey: "", model: "claude-sonnet-4-6" }
 };
-var SkillwrightSettingTab = class extends import_obsidian5.PluginSettingTab {
+var SkillwrightSettingTab = class extends import_obsidian6.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -4308,7 +4363,7 @@ var SkillwrightSettingTab = class extends import_obsidian5.PluginSettingTab {
     const { containerEl } = this;
     const s = this.plugin.settings;
     containerEl.empty();
-    new import_obsidian5.Setting(containerEl).setName("Default provider").addDropdown((dd) => {
+    new import_obsidian6.Setting(containerEl).setName("Default provider").addDropdown((dd) => {
       dd.addOption("ollama", "Ollama");
       dd.addOption("openai", "OpenAI");
       dd.addOption("anthropic", "Anthropic");
@@ -4318,13 +4373,13 @@ var SkillwrightSettingTab = class extends import_obsidian5.PluginSettingTab {
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian5.Setting(containerEl).setName("Skills folder").setDesc("Vault folder containing Claude Code-style skills (subfolders with SKILL.md).").addText(
+    new import_obsidian6.Setting(containerEl).setName("Skills folder").setDesc("Vault folder containing Claude Code-style skills (subfolders with SKILL.md).").addText(
       (t) => t.setValue(s.skillsFolder).onChange(async (v) => {
         s.skillsFolder = v.trim() || "_skills";
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian5.Setting(containerEl).setName("Temperature").addText(
+    new import_obsidian6.Setting(containerEl).setName("Temperature").addText(
       (t) => t.setValue(String(s.temperature)).onChange(async (v) => {
         const n = Number(v);
         if (!Number.isNaN(n))
@@ -4332,7 +4387,7 @@ var SkillwrightSettingTab = class extends import_obsidian5.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian5.Setting(containerEl).setName("Max output tokens").addText(
+    new import_obsidian6.Setting(containerEl).setName("Max output tokens").addText(
       (t) => t.setValue(String(s.maxTokens)).onChange(async (v) => {
         const n = parseInt(v, 10);
         if (!Number.isNaN(n) && n > 0)
@@ -4340,7 +4395,7 @@ var SkillwrightSettingTab = class extends import_obsidian5.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian5.Setting(containerEl).setName("Reference budget (characters)").setDesc(
+    new import_obsidian6.Setting(containerEl).setName("Reference budget (characters)").setDesc(
       "Cap on the reference files a skill pulls into the prompt. Files past the cap are skipped, with a notice."
     ).addText(
       (t) => t.setValue(String(s.refBudgetChars)).onChange(async (v) => {
@@ -4351,60 +4406,106 @@ var SkillwrightSettingTab = class extends import_obsidian5.PluginSettingTab {
       })
     );
     containerEl.createEl("h3", { text: "Ollama" });
-    new import_obsidian5.Setting(containerEl).setName("Base URL").addText(
+    new import_obsidian6.Setting(containerEl).setName("Base URL").addText(
       (t) => t.setValue(s.ollama.baseUrl).onChange(async (v) => {
         s.ollama.baseUrl = v.trim();
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian5.Setting(containerEl).setName("Model").addText(
+    new import_obsidian6.Setting(containerEl).setName("Model").addText(
       (t) => t.setValue(s.ollama.model).onChange(async (v) => {
         s.ollama.model = v.trim();
         await this.plugin.saveSettings();
       })
     );
     containerEl.createEl("h3", { text: "OpenAI" });
-    new import_obsidian5.Setting(containerEl).setName("API key").setDesc("Stored in plain text in this vault's plugin data. Don't sync it anywhere you don't trust.").addText((t) => {
+    new import_obsidian6.Setting(containerEl).setName("API key").setDesc("Stored in plain text in this vault's plugin data. Don't sync it anywhere you don't trust.").addText((t) => {
       t.inputEl.type = "password";
       t.setValue(s.openai.apiKey).onChange(async (v) => {
         s.openai.apiKey = v.trim();
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian5.Setting(containerEl).setName("Base URL").addText(
+    new import_obsidian6.Setting(containerEl).setName("Base URL").addText(
       (t) => t.setValue(s.openai.baseUrl).onChange(async (v) => {
         s.openai.baseUrl = v.trim();
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian5.Setting(containerEl).setName("Model").addText(
+    new import_obsidian6.Setting(containerEl).setName("Model").addText(
       (t) => t.setValue(s.openai.model).onChange(async (v) => {
         s.openai.model = v.trim();
         await this.plugin.saveSettings();
       })
     );
     containerEl.createEl("h3", { text: "Anthropic" });
-    new import_obsidian5.Setting(containerEl).setName("API key").setDesc("Stored in plain text in this vault's plugin data.").addText((t) => {
+    new import_obsidian6.Setting(containerEl).setName("API key").setDesc("Stored in plain text in this vault's plugin data.").addText((t) => {
       t.inputEl.type = "password";
       t.setValue(s.anthropic.apiKey).onChange(async (v) => {
         s.anthropic.apiKey = v.trim();
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian5.Setting(containerEl).setName("Base URL").addText(
+    new import_obsidian6.Setting(containerEl).setName("Base URL").addText(
       (t) => t.setValue(s.anthropic.baseUrl).onChange(async (v) => {
         s.anthropic.baseUrl = v.trim();
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian5.Setting(containerEl).setName("Model").addText(
+    new import_obsidian6.Setting(containerEl).setName("Model").addText(
       (t) => t.setValue(s.anthropic.model).onChange(async (v) => {
         s.anthropic.model = v.trim();
         await this.plugin.saveSettings();
       })
     );
+    this.renderHotkeys(containerEl);
+  }
+  /**
+   * List this plugin's commands with their current bindings. Bindings live in
+   * Obsidian's own config, so nothing here is persisted to plugin settings —
+   * the buttons just shortcut to the Hotkeys pane.
+   *
+   * @param containerEl Element to append the section to.
+   */
+  renderHotkeys(containerEl) {
+    containerEl.createEl("h3", { text: "Hotkeys" });
+    const cmds = pluginCommands(this.app, this.plugin.manifest.id);
+    const hotkeys = getHotkeyManager(this.app);
+    if (!cmds.length || !hotkeys) {
+      this.addHotkeyPaneButton(
+        new import_obsidian6.Setting(containerEl).setDesc(
+          'Assign keys under Settings \u2192 Hotkeys, searching for "Skillwright".'
+        )
+      );
+      return;
+    }
+    for (const cmd of cmds) {
+      const custom = hotkeys.getHotkeys(cmd.id);
+      const bound = custom?.length ? custom : hotkeys.getDefaultHotkeys(cmd.id);
+      const isDefault = !custom?.length && !!bound?.length;
+      const desc = bound?.length ? bound.map(formatHotkey).join(", ") + (isDefault ? " (default)" : "") : "Not set";
+      this.addHotkeyPaneButton(
+        new import_obsidian6.Setting(containerEl).setName(stripPluginPrefix(cmd.name)).setDesc(desc)
+      );
+    }
+  }
+  /** Adds the button that jumps to Obsidian's Hotkeys pane, pre-filtered to this plugin. */
+  addHotkeyPaneButton(setting) {
+    const settingMgr = getSettingManager(this.app);
+    if (!settingMgr)
+      return;
+    setting.addButton(
+      (b) => b.setButtonText("Set hotkey").onClick(() => {
+        const tab = settingMgr.openTabById("hotkeys");
+        tab?.setQuery?.("skillwright");
+      })
+    );
   }
 };
+function stripPluginPrefix(name) {
+  const sep = name.indexOf(": ");
+  return sep === -1 ? name : name.slice(sep + 2);
+}
 
 // src/main.ts
 var SYSTEM_BASE = [
@@ -4414,7 +4515,7 @@ var SYSTEM_BASE = [
   "no quotation marks around the result. Preserve markdown formatting unless the",
   "task says otherwise. Match the original's language unless asked to translate."
 ].join(" ");
-var SkillwrightPlugin = class extends import_obsidian6.Plugin {
+var SkillwrightPlugin = class extends import_obsidian7.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
@@ -4437,7 +4538,7 @@ var SkillwrightPlugin = class extends import_obsidian6.Plugin {
       name: "List loaded skills",
       callback: async () => {
         const skills = await this.getSkills();
-        new import_obsidian6.Notice(
+        new import_obsidian7.Notice(
           skills.length ? `${skills.length} skill(s): ${skills.map((s) => s.name).join(", ")}` : `No skills found in "${this.settings.skillsFolder}".`
         );
       }
@@ -4458,7 +4559,7 @@ var SkillwrightPlugin = class extends import_obsidian6.Plugin {
   async startRewrite(editor) {
     const selection = editor.getSelection();
     if (!selection) {
-      new import_obsidian6.Notice("Select some text first.");
+      new import_obsidian7.Notice("Select some text first.");
       return;
     }
     const skills = await this.getSkills();
@@ -4477,11 +4578,11 @@ var SkillwrightPlugin = class extends import_obsidian6.Plugin {
       if (choice.model)
         cfg.model = choice.model;
       if (!cfg.model) {
-        new import_obsidian6.Notice(`No model configured for ${provider}.`);
+        new import_obsidian7.Notice(`No model configured for ${provider}.`);
         return;
       }
       if (provider !== "ollama" && !("apiKey" in cfg && cfg.apiKey)) {
-        new import_obsidian6.Notice(`No API key configured for ${provider}.`);
+        new import_obsidian7.Notice(`No API key configured for ${provider}.`);
         return;
       }
       const { system, skipped, missing } = await this.buildSystem(choice.skill);
@@ -4491,7 +4592,7 @@ var SkillwrightPlugin = class extends import_obsidian6.Plugin {
           skipped.length ? `${skipped.length} reference(s) over budget (${skipped.join(", ")})` : "",
           missing.length ? `${missing.length} not found (${missing.join(", ")})` : ""
         ].filter(Boolean);
-        new import_obsidian6.Notice(`Skillwright: ${warnings.join("; ")}.`, 8e3);
+        new import_obsidian7.Notice(`Skillwright: ${warnings.join("; ")}.`, 8e3);
       }
       const runOnce = async (temperature) => {
         const text = (await chat(
@@ -4506,14 +4607,14 @@ var SkillwrightPlugin = class extends import_obsidian6.Plugin {
           meta: { provider, model: cfg.model, skill: choice.skill?.name ?? null, temperature }
         };
       };
-      const notice = new import_obsidian6.Notice(`Skillwright: asking ${provider} (${cfg.model})\u2026`, 0);
+      const notice = new import_obsidian7.Notice(`Skillwright: asking ${provider} (${cfg.model})\u2026`, 0);
       try {
         const first = await runOnce(s.temperature);
         notice.hide();
         this.showResult(editor, selection, choice, first, runOnce);
       } catch (e) {
         notice.hide();
-        new import_obsidian6.Notice(`Skillwright error: ${e.message}`, 8e3);
+        new import_obsidian7.Notice(`Skillwright error: ${e.message}`, 8e3);
       }
     }).open();
   }
@@ -4576,7 +4677,7 @@ ${text}`, {
           }
           case "copy":
             await navigator.clipboard.writeText(text);
-            new import_obsidian6.Notice("Copied.");
+            new import_obsidian7.Notice("Copied.");
             break;
           case "dismiss":
             break;
@@ -4595,9 +4696,9 @@ ${text}`, {
       try {
         const buf = await file.arrayBuffer();
         const n = await importSkillsZip(this.app, this.settings.skillsFolder, buf);
-        new import_obsidian6.Notice(`Imported ${n} file(s) into "${this.settings.skillsFolder}".`);
+        new import_obsidian7.Notice(`Imported ${n} file(s) into "${this.settings.skillsFolder}".`);
       } catch (e) {
-        new import_obsidian6.Notice(`Zip import failed: ${e.message}`, 8e3);
+        new import_obsidian7.Notice(`Zip import failed: ${e.message}`, 8e3);
       }
     };
     input.click();
