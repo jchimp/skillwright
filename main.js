@@ -2731,7 +2731,7 @@ __export(main_exports, {
   default: () => SkillwrightPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian7 = require("obsidian");
+var import_obsidian8 = require("obsidian");
 
 // src/providers.ts
 var import_obsidian = require("obsidian");
@@ -2826,28 +2826,30 @@ function providerError(name, status, body) {
 var import_obsidian2 = require("obsidian");
 var import_jszip = __toESM(require_jszip_min());
 var FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
-async function loadSkills(app, skillsFolder) {
+function joinRel(folder, name) {
+  return folder ? `${folder}/${name}` : name;
+}
+async function loadSkills(store) {
   const skills = [];
-  const root = app.vault.getAbstractFileByPath((0, import_obsidian2.normalizePath)(skillsFolder));
-  if (!(root instanceof import_obsidian2.TFolder))
-    return skills;
-  for (const child of root.children) {
-    if (child instanceof import_obsidian2.TFolder) {
-      const skillFile = child.children.find(
-        (f) => f instanceof import_obsidian2.TFile && f.name.toLowerCase() === "skill.md"
-      );
+  for (const child of await store.list("")) {
+    if (child.isDir) {
+      const inner = await store.list(child.name);
+      const skillFile = inner.find((f) => !f.isDir && f.name.toLowerCase() === "skill.md");
       if (skillFile) {
-        skills.push(await parseSkill(app, skillFile, child.name, child.path));
+        skills.push(
+          await parseSkill(store, joinRel(child.name, skillFile.name), child.name, child.name)
+        );
       }
-    } else if (child instanceof import_obsidian2.TFile && child.extension === "md") {
-      skills.push(await parseSkill(app, child, child.basename, root.path));
+    } else if (child.name.toLowerCase().endsWith(".md")) {
+      const base = child.name.slice(0, -3);
+      skills.push(await parseSkill(store, child.name, base, ""));
     }
   }
   skills.sort((a, b) => a.name.localeCompare(b.name));
   return skills;
 }
-async function parseSkill(app, file, fallbackName, folder) {
-  const raw = await app.vault.cachedRead(file);
+async function parseSkill(store, filePath, fallbackName, folder) {
+  const raw = await store.read(filePath);
   let name = fallbackName;
   let description = "";
   let body = raw;
@@ -2863,7 +2865,15 @@ async function parseSkill(app, file, fallbackName, folder) {
     } catch {
     }
   }
-  return { name, description, body: body.trim(), folder, filePath: file.path };
+  return {
+    name,
+    description,
+    body: body.trim(),
+    store,
+    folder,
+    filePath,
+    displayPath: folder ? `${store.label}/${folder}` : store.label
+  };
 }
 var MD_LINK_RE = /\[[^\]]*\]\(([^)\s]+)\)/g;
 var WIKILINK_RE = /\[\[([^\]|#]+)(?:\|[^\]]*)?\]\]/g;
@@ -2883,7 +2893,7 @@ function extractTargets(body) {
 }
 var IGNORE = { kind: "ignore" };
 var REJECT = { kind: "reject" };
-function resolveTarget(target, fromFolder, skillsFolder) {
+function resolveTarget(target, fromFolder) {
   let t = target.trim();
   if (!t || t.startsWith("#"))
     return IGNORE;
@@ -2901,7 +2911,7 @@ function resolveTarget(target, fromFolder, skillsFolder) {
       return IGNORE;
     t = `${t}.md`;
   }
-  const base = t.startsWith("/") ? t.slice(1) : `${fromFolder}/${t}`;
+  const base = t.startsWith("/") ? t.slice(1) : joinRel(fromFolder, t);
   const parts = [];
   for (const part of (0, import_obsidian2.normalizePath)(base).split("/")) {
     if (part === "." || part === "")
@@ -2914,18 +2924,16 @@ function resolveTarget(target, fromFolder, skillsFolder) {
     }
     parts.push(part);
   }
-  const path = parts.join("/");
-  const root = (0, import_obsidian2.normalizePath)(skillsFolder).replace(/\/+$/, "");
-  if (path !== root && !path.startsWith(`${root}/`))
+  if (parts.length === 0)
     return REJECT;
-  return { kind: "path", path };
+  return { kind: "path", path: parts.join("/") };
 }
-async function resolveSkillRefs(app, skill, skillsFolder, budgetChars) {
+async function resolveSkillRefs(skill, budgetChars) {
+  const store = skill.store;
   const refs = [];
   const skipped = [];
   const missing = [];
-  const skillPath = (0, import_obsidian2.normalizePath)(skill.filePath);
-  const visited = /* @__PURE__ */ new Set([skillPath]);
+  const visited = /* @__PURE__ */ new Set([skill.filePath]);
   const seenMissing = /* @__PURE__ */ new Set();
   let queue = [{ body: skill.body, folder: skill.folder }];
   let used = 0;
@@ -2939,68 +2947,70 @@ async function resolveSkillRefs(app, skill, skillsFolder, budgetChars) {
     const next = [];
     for (const node of queue) {
       for (const target of extractTargets(node.body)) {
-        const result = resolveTarget(target, node.folder, skillsFolder);
+        const result = resolveTarget(target, node.folder);
         if (result.kind === "ignore")
           continue;
         if (result.kind === "reject") {
           reportMissing(target);
           continue;
         }
-        const path = result.path;
+        let path = result.path;
         if (visited.has(path))
           continue;
         visited.add(path);
-        let file = app.vault.getAbstractFileByPath(path);
-        if (!(file instanceof import_obsidian2.TFile) && !target.includes("/")) {
-          const found = findByBasename(app, skill.folder, path.split("/").pop() ?? "");
-          if (found) {
-            if (visited.has(found.path))
+        let found = await store.isFile(path);
+        if (!found && !target.includes("/")) {
+          const hit = await findByBasename(store, skill.folder, path.split("/").pop() ?? "");
+          if (hit) {
+            if (visited.has(hit))
               continue;
-            visited.add(found.path);
-            file = found;
+            visited.add(hit);
+            path = hit;
+            found = true;
           }
         }
-        if (!(file instanceof import_obsidian2.TFile)) {
+        if (!found) {
           reportMissing(target);
           continue;
         }
-        const body = (await app.vault.cachedRead(file)).trim();
-        const name = relativeName(file.path, skill.folder);
+        const body = (await store.read(path)).trim();
+        const name = relativeName(path, skill.folder);
         if (used + body.length > budgetChars) {
           skipped.push(name);
           continue;
         }
         used += body.length;
-        refs.push({ path: file.path, name, body });
-        next.push({ body, folder: file.parent?.path ?? node.folder });
+        refs.push({ path, name, body });
+        next.push({ body, folder: parentFolder(path) });
       }
     }
     queue = next;
   }
   return { refs, skipped, missing };
 }
-function findByBasename(app, skillFolder, basename) {
+async function findByBasename(store, skillFolder, basename) {
   if (!basename)
     return null;
-  const root = app.vault.getAbstractFileByPath((0, import_obsidian2.normalizePath)(skillFolder));
-  if (!(root instanceof import_obsidian2.TFolder))
-    return null;
   const want = basename.toLowerCase();
-  const stack = [root];
-  while (stack.length > 0) {
-    const folder = stack.pop();
-    for (const child of folder.children) {
-      if (child instanceof import_obsidian2.TFile && child.name.toLowerCase() === want)
-        return child;
-      if (child instanceof import_obsidian2.TFolder)
-        stack.push(child);
+  const queue = [skillFolder];
+  while (queue.length > 0) {
+    const dir = queue.shift();
+    for (const child of await store.list(dir)) {
+      const path = joinRel(dir, child.name);
+      if (child.isDir)
+        queue.push(path);
+      else if (child.name.toLowerCase() === want)
+        return path;
     }
   }
   return null;
 }
+function parentFolder(path) {
+  const i = path.lastIndexOf("/");
+  return i === -1 ? "" : path.slice(0, i);
+}
 function relativeName(path, folder) {
-  const f = (0, import_obsidian2.normalizePath)(folder).replace(/\/+$/, "");
-  return path.startsWith(`${f}/`) ? path.slice(f.length + 1) : path;
+  return folder && path.startsWith(`${folder}/`) ? path.slice(folder.length + 1) : path;
 }
 async function importSkillsZip(app, skillsFolder, data) {
   const zip = await import_jszip.default.loadAsync(data);
@@ -3051,8 +3061,215 @@ async function ensureFolder(app, path) {
   }
 }
 
+// src/skillref.ts
+var TOKEN_CHARS = /[A-Za-z0-9._-]/;
+var TOKEN_RE = /(^|\s)\/([A-Za-z0-9._-]+)/g;
+function skillSlug(name) {
+  return name.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9._-]/g, "");
+}
+function tokenAtCursor(text, cursor) {
+  let i = cursor;
+  while (i > 0 && TOKEN_CHARS.test(text[i - 1]))
+    i--;
+  if (i === 0 || text[i - 1] !== "/")
+    return null;
+  const start = i - 1;
+  if (start > 0 && !/\s/.test(text[start - 1]))
+    return null;
+  let end = cursor;
+  while (end < text.length && TOKEN_CHARS.test(text[end]))
+    end++;
+  return { start, end, query: text.slice(i, cursor) };
+}
+function matchSkills(query, skills) {
+  const q = query.toLowerCase();
+  if (!q)
+    return skills.slice();
+  const prefix = [];
+  const substring = [];
+  for (const s of skills) {
+    const slug = skillSlug(s.name);
+    const name = s.name.toLowerCase();
+    if (slug.startsWith(q) || name.startsWith(q))
+      prefix.push(s);
+    else if (slug.includes(q) || name.includes(q))
+      substring.push(s);
+  }
+  return [...prefix, ...substring];
+}
+function resolveSkillToken(text, skills) {
+  let skill = null;
+  const cuts = [];
+  TOKEN_RE.lastIndex = 0;
+  for (let m = TOKEN_RE.exec(text); m !== null; m = TOKEN_RE.exec(text)) {
+    const q = m[2].toLowerCase();
+    const hit = skills.find((s) => skillSlug(s.name) === q || s.name.toLowerCase() === q);
+    if (!hit)
+      continue;
+    skill = hit;
+    cuts.push({ start: m.index + m[1].length, end: m.index + m[0].length });
+  }
+  if (!skill)
+    return { skill: null, cleaned: text };
+  let cleaned = text;
+  for (let i = cuts.length - 1; i >= 0; i--) {
+    cleaned = cleaned.slice(0, cuts[i].start) + cleaned.slice(cuts[i].end);
+  }
+  return { skill, cleaned: cleaned.replace(/[ \t]{2,}/g, " ") };
+}
+
+// src/store.ts
+var import_obsidian3 = require("obsidian");
+function join(root, rel) {
+  const r = rel.replace(/^\/+/, "");
+  if (!r)
+    return root;
+  return root ? `${root}/${r}` : r;
+}
+var VaultStore = class {
+  constructor(app, skillsFolder) {
+    this.app = app;
+    this.root = (0, import_obsidian3.normalizePath)(skillsFolder).replace(/\/+$/, "");
+    this.id = `vault:${this.root}`;
+    this.label = this.root;
+  }
+  async list(dir) {
+    const folder = this.app.vault.getAbstractFileByPath((0, import_obsidian3.normalizePath)(join(this.root, dir)));
+    if (!(folder instanceof import_obsidian3.TFolder))
+      return [];
+    return folder.children.map((c) => ({ name: c.name, isDir: c instanceof import_obsidian3.TFolder }));
+  }
+  async read(path) {
+    const file = this.app.vault.getAbstractFileByPath((0, import_obsidian3.normalizePath)(join(this.root, path)));
+    if (!(file instanceof import_obsidian3.TFile))
+      throw new Error(`Not a file: ${path}`);
+    return this.app.vault.cachedRead(file);
+  }
+  async isFile(path) {
+    const file = this.app.vault.getAbstractFileByPath((0, import_obsidian3.normalizePath)(join(this.root, path)));
+    return file instanceof import_obsidian3.TFile;
+  }
+};
+var NodeStore = class {
+  /**
+   * @param root Absolute path to the skills directory.
+   * @param label Display label, usually the `~`-shortened form of `root`.
+   */
+  constructor(root, label) {
+    this.root = root;
+    /** Symlinks are resolved once here; every read is checked against it. */
+    this.realRoot = null;
+    this.id = `fs:${root}`;
+    this.label = label ?? root;
+  }
+  async list(dir) {
+    const target = await this.safePath(dir);
+    if (!target)
+      return [];
+    try {
+      const entries = await fsp().readdir(target, { withFileTypes: true });
+      return entries.map((e) => ({ name: e.name, isDir: e.isDirectory() }));
+    } catch {
+      return [];
+    }
+  }
+  async read(path) {
+    const target = await this.safePath(path);
+    if (!target)
+      throw new Error(`Outside skill folder: ${path}`);
+    return fsp().readFile(target, "utf8");
+  }
+  async isFile(path) {
+    const target = await this.safePath(path);
+    if (!target)
+      return false;
+    try {
+      return (await fsp().stat(target)).isFile();
+    } catch {
+      return false;
+    }
+  }
+  /**
+   * Resolves a store-relative path to a real absolute path, or null if it lands
+   * outside the root. A symlink inside the skill folder pointing at, say,
+   * `~/.ssh` would otherwise get inlined into a prompt and shipped to a provider.
+   *
+   * @param rel Store-relative path.
+   * @returns Absolute path, or null when it escapes the root or can't be resolved.
+   */
+  async safePath(rel) {
+    const { resolve, sep } = nodePath();
+    if (this.realRoot === null) {
+      try {
+        this.realRoot = await fsp().realpath(this.root);
+      } catch {
+        this.realRoot = resolve(this.root);
+      }
+    }
+    const candidate = resolve(this.realRoot, ...rel.split("/").filter((p) => p && p !== "."));
+    let real = candidate;
+    try {
+      real = await fsp().realpath(candidate);
+    } catch {
+    }
+    if (real !== this.realRoot && !real.startsWith(this.realRoot + sep))
+      return null;
+    return real;
+  }
+};
+var AGENT_SKILL_DIRS = [".claude/skills", ".codex/skills"];
+async function resolveStores(app, settings) {
+  const stores = [new VaultStore(app, settings.skillsFolder)];
+  if (!import_obsidian3.Platform.isDesktopApp)
+    return stores;
+  const home = os().homedir();
+  const seen = /* @__PURE__ */ new Set();
+  const add = async (abs, label) => {
+    const key = abs.toLowerCase();
+    if (seen.has(key))
+      return;
+    seen.add(key);
+    if (!await isDir(abs))
+      return;
+    stores.push(new NodeStore(abs, label));
+  };
+  if (settings.includeAgentSkillFolders) {
+    for (const rel of AGENT_SKILL_DIRS) {
+      await add(nodePath().resolve(home, rel), `~/${rel}`);
+    }
+  }
+  for (const line of settings.extraSkillFolders.split("\n")) {
+    const raw = line.trim();
+    if (!raw || raw.startsWith("#"))
+      continue;
+    await add(expandHome(raw, home), raw);
+  }
+  return stores;
+}
+function expandHome(p, home) {
+  const path = nodePath();
+  const t = p.replace(/^~(?=[/\\]|$)/, home);
+  return path.resolve(t);
+}
+async function isDir(abs) {
+  try {
+    return (await fsp().stat(abs)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+function fsp() {
+  return require("fs").promises;
+}
+function nodePath() {
+  return require("path");
+}
+function os() {
+  return require("os");
+}
+
 // src/modals.ts
-var import_obsidian4 = require("obsidian");
+var import_obsidian5 = require("obsidian");
 
 // node_modules/diff/lib/index.mjs
 function Diff() {
@@ -3228,7 +3445,7 @@ Diff.prototype = {
   tokenize: function tokenize(value) {
     return Array.from(value);
   },
-  join: function join(chars) {
+  join: function join2(chars) {
     return chars.join("");
   },
   postProcess: function postProcess(changeObjects) {
@@ -3611,7 +3828,7 @@ arrayDiff.join = arrayDiff.removeEmpty = function(value) {
 };
 
 // src/diffview.ts
-var import_obsidian3 = require("obsidian");
+var import_obsidian4 = require("obsidian");
 var MAX_DIFF_CHARS = 2e4;
 function toLines(value) {
   const lines = value.split("\n");
@@ -3720,63 +3937,6 @@ function renderSideBySideDiff(parent, original, revised) {
   }
 }
 
-// src/skillref.ts
-var TOKEN_CHARS = /[A-Za-z0-9._-]/;
-var TOKEN_RE = /(^|\s)\/([A-Za-z0-9._-]+)/g;
-function skillSlug(name) {
-  return name.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9._-]/g, "");
-}
-function tokenAtCursor(text, cursor) {
-  let i = cursor;
-  while (i > 0 && TOKEN_CHARS.test(text[i - 1]))
-    i--;
-  if (i === 0 || text[i - 1] !== "/")
-    return null;
-  const start = i - 1;
-  if (start > 0 && !/\s/.test(text[start - 1]))
-    return null;
-  let end = cursor;
-  while (end < text.length && TOKEN_CHARS.test(text[end]))
-    end++;
-  return { start, end, query: text.slice(i, cursor) };
-}
-function matchSkills(query, skills) {
-  const q = query.toLowerCase();
-  if (!q)
-    return skills.slice();
-  const prefix = [];
-  const substring = [];
-  for (const s of skills) {
-    const slug = skillSlug(s.name);
-    const name = s.name.toLowerCase();
-    if (slug.startsWith(q) || name.startsWith(q))
-      prefix.push(s);
-    else if (slug.includes(q) || name.includes(q))
-      substring.push(s);
-  }
-  return [...prefix, ...substring];
-}
-function resolveSkillToken(text, skills) {
-  let skill = null;
-  const cuts = [];
-  TOKEN_RE.lastIndex = 0;
-  for (let m = TOKEN_RE.exec(text); m !== null; m = TOKEN_RE.exec(text)) {
-    const q = m[2].toLowerCase();
-    const hit = skills.find((s) => skillSlug(s.name) === q || s.name.toLowerCase() === q);
-    if (!hit)
-      continue;
-    skill = hit;
-    cuts.push({ start: m.index + m[1].length, end: m.index + m[0].length });
-  }
-  if (!skill)
-    return { skill: null, cleaned: text };
-  let cleaned = text;
-  for (let i = cuts.length - 1; i >= 0; i--) {
-    cleaned = cleaned.slice(0, cuts[i].start) + cleaned.slice(cuts[i].end);
-  }
-  return { skill, cleaned: cleaned.replace(/[ \t]{2,}/g, " ") };
-}
-
 // src/modals.ts
 var MAX_SUGGESTIONS = 8;
 var MIRROR_PROPS = [
@@ -3828,7 +3988,7 @@ var PROVIDER_LABELS = {
   openai: "OpenAI",
   anthropic: "Anthropic"
 };
-var RewriteModal = class extends import_obsidian4.Modal {
+var RewriteModal = class extends import_obsidian5.Modal {
   constructor(app, skills, defaults, onSubmit) {
     super(app);
     this.selectedSkill = null;
@@ -3857,7 +4017,7 @@ var RewriteModal = class extends import_obsidian4.Modal {
     const { contentEl } = this;
     contentEl.addClass("skillwright-modal");
     contentEl.createEl("h3", { text: "Rewrite selection" });
-    new import_obsidian4.Setting(contentEl).setName("Instruction").setDesc('e.g. "rewrite in Lab Notes voice /jchimp-brand", "tighten to half length"').setClass("skillwright-instruction-row").addTextArea((ta) => {
+    new import_obsidian5.Setting(contentEl).setName("Instruction").setDesc('e.g. "rewrite in Lab Notes voice /jchimp-brand", "tighten to half length"').setClass("skillwright-instruction-row").addTextArea((ta) => {
       ta.setPlaceholder("What should happen to the selection?  Type / to pick a skill.");
       ta.inputEl.rows = 4;
       ta.inputEl.addClass("skillwright-instruction");
@@ -3875,7 +4035,7 @@ var RewriteModal = class extends import_obsidian4.Modal {
       ta.inputEl.addEventListener("keydown", (e) => this.onInputKeydown(e));
       ta.inputEl.addEventListener("blur", () => window.setTimeout(() => this.closeSuggest(), 100));
     });
-    new import_obsidian4.Setting(contentEl).setName("Skill").setDesc("Optional. Loaded from your skills folder.").addExtraButton((b) => {
+    new import_obsidian5.Setting(contentEl).setName("Skill").setDesc("Optional. Loaded from your skills folder.").addExtraButton((b) => {
       this.infoButton = b;
       b.setIcon("info").setTooltip("Show skill description").setDisabled(true).onClick(() => {
         const skill = this.selectedSkill;
@@ -3896,7 +4056,7 @@ var RewriteModal = class extends import_obsidian4.Modal {
         this.setSkill(v === "" ? null : this.skills[Number(v)] ?? null, "dropdown");
       });
     });
-    new import_obsidian4.Setting(contentEl).setName("Provider / model").addDropdown((dd) => {
+    new import_obsidian5.Setting(contentEl).setName("Provider / model").addDropdown((dd) => {
       for (const [id, label] of Object.entries(PROVIDER_LABELS))
         dd.addOption(id, label);
       dd.setValue(this.provider);
@@ -3911,7 +4071,7 @@ var RewriteModal = class extends import_obsidian4.Modal {
       t.setValue(this.model);
       t.onChange((v) => this.model = v.trim());
     });
-    new import_obsidian4.Setting(contentEl).addButton(
+    new import_obsidian5.Setting(contentEl).addButton(
       (b) => b.setButtonText("Rewrite (Ctrl+Enter)").setCta().onClick(() => this.submit())
     );
   }
@@ -4058,7 +4218,7 @@ var RewriteModal = class extends import_obsidian4.Modal {
     const chosen = skill ?? this.selectedSkill;
     const instruction = cleaned.trim();
     if (!chosen && !instruction) {
-      new import_obsidian4.Notice("Pick a skill or type an instruction.");
+      new import_obsidian5.Notice("Pick a skill or type an instruction.");
       return;
     }
     this.close();
@@ -4074,7 +4234,7 @@ var RewriteModal = class extends import_obsidian4.Modal {
     this.contentEl.empty();
   }
 };
-var InfoModal = class extends import_obsidian4.Modal {
+var InfoModal = class extends import_obsidian5.Modal {
   constructor(app, opts) {
     super(app);
     this.opts = opts;
@@ -4119,7 +4279,7 @@ function clampTemperature(raw, fallback) {
     return fallback;
   return Math.min(TEMP_MAX, Math.max(TEMP_MIN, n));
 }
-var ResultModal = class extends import_obsidian4.Modal {
+var ResultModal = class extends import_obsidian5.Modal {
   constructor(app, opts) {
     super(app);
     this.index = 0;
@@ -4184,14 +4344,14 @@ var ResultModal = class extends import_obsidian4.Modal {
         this.rerun();
       }
     });
-    new import_obsidian4.ExtraButtonComponent(temp).setIcon("info").setTooltip(TEMP_TOOLTIP).onClick(
+    new import_obsidian5.ExtraButtonComponent(temp).setIcon("info").setTooltip(TEMP_TOOLTIP).onClick(
       () => new InfoModal(this.app, { heading: "Temperature", body: TEMP_EXPLAINER }).open()
     );
-    this.rerunButton = new import_obsidian4.ButtonComponent(row).setButtonText("Re-Run").onClick(() => this.rerun());
-    this.replaceButton = new import_obsidian4.ButtonComponent(row).setButtonText("Replace").setCta().onClick(() => this.act("replace"));
-    this.insertButton = new import_obsidian4.ButtonComponent(row).setButtonText("Insert below").onClick(() => this.act("insert"));
-    this.copyButton = new import_obsidian4.ButtonComponent(row).setButtonText("Copy").onClick(() => this.act("copy"));
-    this.dismissButton = new import_obsidian4.ButtonComponent(row).setButtonText("Dismiss").onClick(() => this.act("dismiss"));
+    this.rerunButton = new import_obsidian5.ButtonComponent(row).setButtonText("Re-Run").onClick(() => this.rerun());
+    this.replaceButton = new import_obsidian5.ButtonComponent(row).setButtonText("Replace").setCta().onClick(() => this.act("replace"));
+    this.insertButton = new import_obsidian5.ButtonComponent(row).setButtonText("Insert below").onClick(() => this.act("insert"));
+    this.copyButton = new import_obsidian5.ButtonComponent(row).setButtonText("Copy").onClick(() => this.act("copy"));
+    this.dismissButton = new import_obsidian5.ButtonComponent(row).setButtonText("Dismiss").onClick(() => this.act("dismiss"));
     this.render();
   }
   /** Repaints meta chips, toggle state, nav, and the diff/edit pane for the current attempt. */
@@ -4266,7 +4426,7 @@ var ResultModal = class extends import_obsidian4.Modal {
       this.render();
     } catch (e) {
       if (!this.closed)
-        new import_obsidian4.Notice(`Skillwright error: ${e.message}`, 8e3);
+        new import_obsidian5.Notice(`Skillwright error: ${e.message}`, 8e3);
     } finally {
       if (!this.closed) {
         this.busy = false;
@@ -4288,10 +4448,10 @@ var ResultModal = class extends import_obsidian4.Modal {
 };
 
 // src/settings.ts
-var import_obsidian6 = require("obsidian");
+var import_obsidian7 = require("obsidian");
 
 // src/obsidian-internal.ts
-var import_obsidian5 = require("obsidian");
+var import_obsidian6 = require("obsidian");
 function internals(app) {
   return app;
 }
@@ -4337,7 +4497,7 @@ var PC_NAMES = {
 };
 function formatHotkey(hk) {
   const key = hk.key.length === 1 ? hk.key.toUpperCase() : hk.key;
-  if (import_obsidian5.Platform.isMacOS) {
+  if (import_obsidian6.Platform.isMacOS) {
     return hk.modifiers.map((m) => MAC_GLYPHS[m] ?? m).join("") + key;
   }
   return [...hk.modifiers.map((m) => PC_NAMES[m] ?? m), key].join(" + ");
@@ -4347,6 +4507,8 @@ function formatHotkey(hk) {
 var DEFAULT_SETTINGS = {
   defaultProvider: "ollama",
   skillsFolder: "_skills",
+  includeAgentSkillFolders: true,
+  extraSkillFolders: "",
   temperature: 0.7,
   maxTokens: 2048,
   refBudgetChars: 4e4,
@@ -4354,7 +4516,7 @@ var DEFAULT_SETTINGS = {
   openai: { baseUrl: "https://api.openai.com", apiKey: "", model: "gpt-4o-mini" },
   anthropic: { baseUrl: "https://api.anthropic.com", apiKey: "", model: "claude-sonnet-4-6" }
 };
-var SkillwrightSettingTab = class extends import_obsidian6.PluginSettingTab {
+var SkillwrightSettingTab = class extends import_obsidian7.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -4363,7 +4525,7 @@ var SkillwrightSettingTab = class extends import_obsidian6.PluginSettingTab {
     const { containerEl } = this;
     const s = this.plugin.settings;
     containerEl.empty();
-    new import_obsidian6.Setting(containerEl).setName("Default provider").addDropdown((dd) => {
+    new import_obsidian7.Setting(containerEl).setName("Default provider").addDropdown((dd) => {
       dd.addOption("ollama", "Ollama");
       dd.addOption("openai", "OpenAI");
       dd.addOption("anthropic", "Anthropic");
@@ -4373,29 +4535,34 @@ var SkillwrightSettingTab = class extends import_obsidian6.PluginSettingTab {
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian6.Setting(containerEl).setName("Skills folder").setDesc("Vault folder containing Claude Code-style skills (subfolders with SKILL.md).").addText(
+    containerEl.createEl("h3", { text: "Skill sources" });
+    new import_obsidian7.Setting(containerEl).setName("Skills folder").setDesc(
+      'Vault folder containing Claude Code-style skills (subfolders with SKILL.md). Skills here shadow same-named skills from the folders below, and "Import skills from zip\u2026" writes here \u2014 but skills you already have on disk need no import.'
+    ).addText(
       (t) => t.setValue(s.skillsFolder).onChange(async (v) => {
         s.skillsFolder = v.trim() || "_skills";
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian6.Setting(containerEl).setName("Temperature").addText(
-      (t) => t.setValue(String(s.temperature)).onChange(async (v) => {
-        const n = Number(v);
-        if (!Number.isNaN(n))
-          s.temperature = Math.min(2, Math.max(0, n));
+    new import_obsidian7.Setting(containerEl).setName("Include agent skill folders").setDesc(
+      "Read ~/.claude/skills and ~/.codex/skills in place, no import needed. Desktop only."
+    ).addToggle(
+      (t) => t.setValue(s.includeAgentSkillFolders).onChange(async (v) => {
+        s.includeAgentSkillFolders = v;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian6.Setting(containerEl).setName("Max output tokens").addText(
-      (t) => t.setValue(String(s.maxTokens)).onChange(async (v) => {
-        const n = parseInt(v, 10);
-        if (!Number.isNaN(n) && n > 0)
-          s.maxTokens = n;
+    new import_obsidian7.Setting(containerEl).setName("Extra skill folders").setDesc(
+      "One folder per line, read in place. Absolute paths, `~` allowed; lines starting with # are ignored. Desktop only."
+    ).addTextArea((t) => {
+      t.inputEl.rows = 4;
+      t.setPlaceholder("~/my-skills\nD:\\shared\\skills");
+      t.setValue(s.extraSkillFolders).onChange(async (v) => {
+        s.extraSkillFolders = v;
         await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian6.Setting(containerEl).setName("Reference budget (characters)").setDesc(
+      });
+    });
+    new import_obsidian7.Setting(containerEl).setName("Reference budget (characters)").setDesc(
       "Cap on the reference files a skill pulls into the prompt. Files past the cap are skipped, with a notice."
     ).addText(
       (t) => t.setValue(String(s.refBudgetChars)).onChange(async (v) => {
@@ -4405,54 +4572,71 @@ var SkillwrightSettingTab = class extends import_obsidian6.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
+    containerEl.createEl("h3", { text: "Generation" });
+    new import_obsidian7.Setting(containerEl).setName("Temperature").addText(
+      (t) => t.setValue(String(s.temperature)).onChange(async (v) => {
+        const n = Number(v);
+        if (!Number.isNaN(n))
+          s.temperature = Math.min(2, Math.max(0, n));
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian7.Setting(containerEl).setName("Max output tokens").addText(
+      (t) => t.setValue(String(s.maxTokens)).onChange(async (v) => {
+        const n = parseInt(v, 10);
+        if (!Number.isNaN(n) && n > 0)
+          s.maxTokens = n;
+        await this.plugin.saveSettings();
+      })
+    );
     containerEl.createEl("h3", { text: "Ollama" });
-    new import_obsidian6.Setting(containerEl).setName("Base URL").addText(
+    new import_obsidian7.Setting(containerEl).setName("Base URL").addText(
       (t) => t.setValue(s.ollama.baseUrl).onChange(async (v) => {
         s.ollama.baseUrl = v.trim();
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian6.Setting(containerEl).setName("Model").addText(
+    new import_obsidian7.Setting(containerEl).setName("Model").addText(
       (t) => t.setValue(s.ollama.model).onChange(async (v) => {
         s.ollama.model = v.trim();
         await this.plugin.saveSettings();
       })
     );
     containerEl.createEl("h3", { text: "OpenAI" });
-    new import_obsidian6.Setting(containerEl).setName("API key").setDesc("Stored in plain text in this vault's plugin data. Don't sync it anywhere you don't trust.").addText((t) => {
+    new import_obsidian7.Setting(containerEl).setName("API key").setDesc("Stored in plain text in this vault's plugin data. Don't sync it anywhere you don't trust.").addText((t) => {
       t.inputEl.type = "password";
       t.setValue(s.openai.apiKey).onChange(async (v) => {
         s.openai.apiKey = v.trim();
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian6.Setting(containerEl).setName("Base URL").addText(
+    new import_obsidian7.Setting(containerEl).setName("Base URL").addText(
       (t) => t.setValue(s.openai.baseUrl).onChange(async (v) => {
         s.openai.baseUrl = v.trim();
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian6.Setting(containerEl).setName("Model").addText(
+    new import_obsidian7.Setting(containerEl).setName("Model").addText(
       (t) => t.setValue(s.openai.model).onChange(async (v) => {
         s.openai.model = v.trim();
         await this.plugin.saveSettings();
       })
     );
     containerEl.createEl("h3", { text: "Anthropic" });
-    new import_obsidian6.Setting(containerEl).setName("API key").setDesc("Stored in plain text in this vault's plugin data.").addText((t) => {
+    new import_obsidian7.Setting(containerEl).setName("API key").setDesc("Stored in plain text in this vault's plugin data.").addText((t) => {
       t.inputEl.type = "password";
       t.setValue(s.anthropic.apiKey).onChange(async (v) => {
         s.anthropic.apiKey = v.trim();
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian6.Setting(containerEl).setName("Base URL").addText(
+    new import_obsidian7.Setting(containerEl).setName("Base URL").addText(
       (t) => t.setValue(s.anthropic.baseUrl).onChange(async (v) => {
         s.anthropic.baseUrl = v.trim();
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian6.Setting(containerEl).setName("Model").addText(
+    new import_obsidian7.Setting(containerEl).setName("Model").addText(
       (t) => t.setValue(s.anthropic.model).onChange(async (v) => {
         s.anthropic.model = v.trim();
         await this.plugin.saveSettings();
@@ -4473,7 +4657,7 @@ var SkillwrightSettingTab = class extends import_obsidian6.PluginSettingTab {
     const hotkeys = getHotkeyManager(this.app);
     if (!cmds.length || !hotkeys) {
       this.addHotkeyPaneButton(
-        new import_obsidian6.Setting(containerEl).setDesc(
+        new import_obsidian7.Setting(containerEl).setDesc(
           'Assign keys under Settings \u2192 Hotkeys, searching for "Skillwright".'
         )
       );
@@ -4485,7 +4669,7 @@ var SkillwrightSettingTab = class extends import_obsidian6.PluginSettingTab {
       const isDefault = !custom?.length && !!bound?.length;
       const desc = bound?.length ? bound.map(formatHotkey).join(", ") + (isDefault ? " (default)" : "") : "Not set";
       this.addHotkeyPaneButton(
-        new import_obsidian6.Setting(containerEl).setName(stripPluginPrefix(cmd.name)).setDesc(desc)
+        new import_obsidian7.Setting(containerEl).setName(stripPluginPrefix(cmd.name)).setDesc(desc)
       );
     }
   }
@@ -4515,7 +4699,7 @@ var SYSTEM_BASE = [
   "no quotation marks around the result. Preserve markdown formatting unless the",
   "task says otherwise. Match the original's language unless asked to translate."
 ].join(" ");
-var SkillwrightPlugin = class extends import_obsidian7.Plugin {
+var SkillwrightPlugin = class extends import_obsidian8.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
@@ -4537,10 +4721,19 @@ var SkillwrightPlugin = class extends import_obsidian7.Plugin {
       id: "reload-skills",
       name: "List loaded skills",
       callback: async () => {
-        const skills = await this.getSkills();
-        new import_obsidian7.Notice(
-          skills.length ? `${skills.length} skill(s): ${skills.map((s) => s.name).join(", ")}` : `No skills found in "${this.settings.skillsFolder}".`
-        );
+        const { skills, counts, shadowed } = await this.getSkills();
+        if (!skills.length) {
+          const where = counts.map((c) => c.label).join(", ");
+          new import_obsidian8.Notice(`No skills found in: ${where}.`, 8e3);
+          return;
+        }
+        const lines = [
+          `${skills.length} skill(s): ${skills.map((s) => s.name).join(", ")}`,
+          ...counts.map((c) => `  ${c.label}: ${c.count}`)
+        ];
+        if (shadowed.length)
+          lines.push(`  shadowed: ${shadowed.join(", ")}`);
+        new import_obsidian8.Notice(lines.join("\n"), 1e4);
       }
     });
     this.registerEvent(
@@ -4553,16 +4746,44 @@ var SkillwrightPlugin = class extends import_obsidian7.Plugin {
       })
     );
   }
+  /**
+   * Loads skills from every configured source. Earlier stores win name collisions,
+   * so a vault skill shadows a same-named one on disk — and the slash-token
+   * resolver in skillref.ts never sees two skills with the same slug.
+   *
+   * @returns Merged skills sorted by name, plus what each source contributed.
+   */
   async getSkills() {
-    return loadSkills(this.app, this.settings.skillsFolder);
+    const stores = await resolveStores(this.app, this.settings);
+    const skills = [];
+    const counts = [];
+    const shadowed = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (const store of stores) {
+      const loaded = await loadSkills(store);
+      let kept = 0;
+      for (const skill of loaded) {
+        const slug = skillSlug(skill.name);
+        if (seen.has(slug)) {
+          shadowed.push(`${skill.name} (${store.label})`);
+          continue;
+        }
+        seen.add(slug);
+        skills.push(skill);
+        kept++;
+      }
+      counts.push({ label: store.label, count: kept });
+    }
+    skills.sort((a, b) => a.name.localeCompare(b.name));
+    return { skills, counts, shadowed };
   }
   async startRewrite(editor) {
     const selection = editor.getSelection();
     if (!selection) {
-      new import_obsidian7.Notice("Select some text first.");
+      new import_obsidian8.Notice("Select some text first.");
       return;
     }
-    const skills = await this.getSkills();
+    const { skills } = await this.getSkills();
     const s = this.settings;
     const defaults = {
       provider: s.defaultProvider,
@@ -4578,11 +4799,11 @@ var SkillwrightPlugin = class extends import_obsidian7.Plugin {
       if (choice.model)
         cfg.model = choice.model;
       if (!cfg.model) {
-        new import_obsidian7.Notice(`No model configured for ${provider}.`);
+        new import_obsidian8.Notice(`No model configured for ${provider}.`);
         return;
       }
       if (provider !== "ollama" && !("apiKey" in cfg && cfg.apiKey)) {
-        new import_obsidian7.Notice(`No API key configured for ${provider}.`);
+        new import_obsidian8.Notice(`No API key configured for ${provider}.`);
         return;
       }
       const { system, skipped, missing } = await this.buildSystem(choice.skill);
@@ -4592,7 +4813,7 @@ var SkillwrightPlugin = class extends import_obsidian7.Plugin {
           skipped.length ? `${skipped.length} reference(s) over budget (${skipped.join(", ")})` : "",
           missing.length ? `${missing.length} not found (${missing.join(", ")})` : ""
         ].filter(Boolean);
-        new import_obsidian7.Notice(`Skillwright: ${warnings.join("; ")}.`, 8e3);
+        new import_obsidian8.Notice(`Skillwright: ${warnings.join("; ")}.`, 8e3);
       }
       const runOnce = async (temperature) => {
         const text = (await chat(
@@ -4607,32 +4828,27 @@ var SkillwrightPlugin = class extends import_obsidian7.Plugin {
           meta: { provider, model: cfg.model, skill: choice.skill?.name ?? null, temperature }
         };
       };
-      const notice = new import_obsidian7.Notice(`Skillwright: asking ${provider} (${cfg.model})\u2026`, 0);
+      const notice = new import_obsidian8.Notice(`Skillwright: asking ${provider} (${cfg.model})\u2026`, 0);
       try {
         const first = await runOnce(s.temperature);
         notice.hide();
         this.showResult(editor, selection, choice, first, runOnce);
       } catch (e) {
         notice.hide();
-        new import_obsidian7.Notice(`Skillwright error: ${e.message}`, 8e3);
+        new import_obsidian8.Notice(`Skillwright error: ${e.message}`, 8e3);
       }
     }).open();
   }
   async buildSystem(skill) {
     if (!skill)
       return { system: SYSTEM_BASE, skipped: [], missing: [] };
-    const { refs, skipped, missing } = await resolveSkillRefs(
-      this.app,
-      skill,
-      this.settings.skillsFolder,
-      this.settings.refBudgetChars
-    );
+    const { refs, skipped, missing } = await resolveSkillRefs(skill, this.settings.refBudgetChars);
     const parts = [
       SYSTEM_BASE,
       "",
       `## Active skill: ${skill.name}`,
       skill.description ? `(${skill.description})` : "",
-      `Skill folder: ${skill.folder}`,
+      `Skill folder: ${skill.displayPath}`,
       "",
       skill.body
     ];
@@ -4677,7 +4893,7 @@ ${text}`, {
           }
           case "copy":
             await navigator.clipboard.writeText(text);
-            new import_obsidian7.Notice("Copied.");
+            new import_obsidian8.Notice("Copied.");
             break;
           case "dismiss":
             break;
@@ -4696,9 +4912,9 @@ ${text}`, {
       try {
         const buf = await file.arrayBuffer();
         const n = await importSkillsZip(this.app, this.settings.skillsFolder, buf);
-        new import_obsidian7.Notice(`Imported ${n} file(s) into "${this.settings.skillsFolder}".`);
+        new import_obsidian8.Notice(`Imported ${n} file(s) into "${this.settings.skillsFolder}".`);
       } catch (e) {
-        new import_obsidian7.Notice(`Zip import failed: ${e.message}`, 8e3);
+        new import_obsidian8.Notice(`Zip import failed: ${e.message}`, 8e3);
       }
     };
     input.click();

@@ -1,5 +1,6 @@
-import { App, Notice, TFile, TFolder, normalizePath, parseYaml } from "obsidian";
+import { App, Notice, TFile, normalizePath, parseYaml } from "obsidian";
 import JSZip from "jszip";
+import type { SkillStore } from "./store";
 
 export interface Skill {
   /** Frontmatter `name`, falls back to folder name */
@@ -8,15 +9,19 @@ export interface Skill {
   description: string;
   /** SKILL.md body (frontmatter stripped) */
   body: string;
-  /** Vault path to the skill folder */
+  /** Where this skill was read from */
+  store: SkillStore;
+  /** Store-relative path to the skill folder ("" for a loose skill at the root) */
   folder: string;
-  /** Vault path to the SKILL.md file itself */
+  /** Store-relative path to the SKILL.md file itself */
   filePath: string;
+  /** Human-readable location, e.g. `~/.claude/skills/humanizer` */
+  displayPath: string;
 }
 
 /** A reference file pulled in because the skill body points at it. */
 export interface SkillRef {
-  /** Vault path */
+  /** Store-relative path */
   path: string;
   /** Path relative to the skill folder, as the body would write it */
   name: string;
@@ -28,39 +33,47 @@ export interface ResolvedRefs {
   refs: SkillRef[];
   /** Names of files dropped because the budget was exhausted */
   skipped: string[];
-  /** Reference targets that didn't resolve to a file inside the skills folder */
+  /** Reference targets that didn't resolve to a file inside the skill's store */
   missing: string[];
 }
 
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
 
+/** Joins store-relative path segments, tolerating an empty parent. */
+function joinRel(folder: string, name: string): string {
+  return folder ? `${folder}/${name}` : name;
+}
+
 /**
- * Loads skills in Claude Code layout:
+ * Loads skills in Claude Code layout from one store:
  *
- *   <skillsFolder>/
+ *   <store root>/
  *     my-skill/
  *       SKILL.md        <- frontmatter: name, description; body = instructions
  *       ref-whatever.md <- referenced files stay on disk; body can point to them
  *     another-skill/
  *       SKILL.md
  *
- * A bare `<skillsFolder>/loose-skill.md` is also accepted for quick one-offs.
+ * A bare `<store root>/loose-skill.md` is also accepted for quick one-offs.
+ *
+ * @param store Source to read from (vault folder or an external directory).
+ * @returns Skills sorted by name; empty if the root isn't readable.
  */
-export async function loadSkills(app: App, skillsFolder: string): Promise<Skill[]> {
+export async function loadSkills(store: SkillStore): Promise<Skill[]> {
   const skills: Skill[] = [];
-  const root = app.vault.getAbstractFileByPath(normalizePath(skillsFolder));
-  if (!(root instanceof TFolder)) return skills;
 
-  for (const child of root.children) {
-    if (child instanceof TFolder) {
-      const skillFile = child.children.find(
-        (f): f is TFile => f instanceof TFile && f.name.toLowerCase() === "skill.md"
-      );
+  for (const child of await store.list("")) {
+    if (child.isDir) {
+      const inner = await store.list(child.name);
+      const skillFile = inner.find((f) => !f.isDir && f.name.toLowerCase() === "skill.md");
       if (skillFile) {
-        skills.push(await parseSkill(app, skillFile, child.name, child.path));
+        skills.push(
+          await parseSkill(store, joinRel(child.name, skillFile.name), child.name, child.name)
+        );
       }
-    } else if (child instanceof TFile && child.extension === "md") {
-      skills.push(await parseSkill(app, child, child.basename, root.path));
+    } else if (child.name.toLowerCase().endsWith(".md")) {
+      const base = child.name.slice(0, -3);
+      skills.push(await parseSkill(store, child.name, base, ""));
     }
   }
 
@@ -69,12 +82,12 @@ export async function loadSkills(app: App, skillsFolder: string): Promise<Skill[
 }
 
 async function parseSkill(
-  app: App,
-  file: TFile,
+  store: SkillStore,
+  filePath: string,
   fallbackName: string,
   folder: string
 ): Promise<Skill> {
-  const raw = await app.vault.cachedRead(file);
+  const raw = await store.read(filePath);
   let name = fallbackName;
   let description = "";
   let body = raw;
@@ -91,7 +104,15 @@ async function parseSkill(
     }
   }
 
-  return { name, description, body: body.trim(), folder, filePath: file.path };
+  return {
+    name,
+    description,
+    body: body.trim(),
+    store,
+    folder,
+    filePath,
+    displayPath: folder ? `${store.label}/${folder}` : store.label,
+  };
 }
 
 /**
@@ -119,7 +140,7 @@ function extractTargets(body: string): string[] {
 
 /**
  * `ignore` — not a local markdown reference at all (a URL, an anchor, an image); silent.
- * `reject` — looks like a local reference but lands outside the skills folder; reported,
+ * `reject` — looks like a local reference but lands outside the store root; reported,
  * because a link that silently does nothing is worth telling the user about.
  */
 type TargetResult = { kind: "ignore" } | { kind: "reject" } | { kind: "path"; path: string };
@@ -128,10 +149,14 @@ const IGNORE: TargetResult = { kind: "ignore" };
 const REJECT: TargetResult = { kind: "reject" };
 
 /**
- * Turns a raw link target into a vault path. The containment check is what keeps a
- * `../../../secrets.md` from being read out of the vault and shipped to a provider.
+ * Turns a raw link target into a store-relative path. Walking off the top of the
+ * path is what a `../../../secrets.md` looks like, and it's rejected here — the
+ * store enforces the same boundary again on the actual read.
+ *
+ * @param target Raw link target from a skill body.
+ * @param fromFolder Store-relative folder of the file the link was found in.
  */
-function resolveTarget(target: string, fromFolder: string, skillsFolder: string): TargetResult {
+function resolveTarget(target: string, fromFolder: string): TargetResult {
   let t = target.trim();
   if (!t || t.startsWith("#")) return IGNORE;
   if (/^[a-z][a-z0-9+.-]*:/i.test(t) || t.startsWith("//")) return IGNORE; // http:, mailto:, …
@@ -148,7 +173,7 @@ function resolveTarget(target: string, fromFolder: string, skillsFolder: string)
     t = `${t}.md`; // extensionless wikilink
   }
 
-  const base = t.startsWith("/") ? t.slice(1) : `${fromFolder}/${t}`;
+  const base = t.startsWith("/") ? t.slice(1) : joinRel(fromFolder, t);
   const parts: string[] = [];
   for (const part of normalizePath(base).split("/")) {
     if (part === "." || part === "") continue;
@@ -159,30 +184,28 @@ function resolveTarget(target: string, fromFolder: string, skillsFolder: string)
     }
     parts.push(part);
   }
-  const path = parts.join("/");
-
-  const root = normalizePath(skillsFolder).replace(/\/+$/, "");
-  if (path !== root && !path.startsWith(`${root}/`)) return REJECT;
-  return { kind: "path", path };
+  if (parts.length === 0) return REJECT;
+  return { kind: "path", path: parts.join("/") };
 }
 
 /**
  * Reads the files a skill's body points at so they can be inlined into the prompt.
  * The providers here are plain chat completions with no tool loop, so anything the
  * model needs has to be in the message; there is no "go open that file" fallback.
+ *
+ * @param skill Skill whose references to resolve; its own store is used for reads.
+ * @param budgetChars Cap on total reference characters.
  */
 export async function resolveSkillRefs(
-  app: App,
   skill: Skill,
-  skillsFolder: string,
   budgetChars: number
 ): Promise<ResolvedRefs> {
+  const store = skill.store;
   const refs: SkillRef[] = [];
   const skipped: string[] = [];
   const missing: string[] = [];
 
-  const skillPath = normalizePath(skill.filePath);
-  const visited = new Set<string>([skillPath]);
+  const visited = new Set<string>([skill.filePath]);
   const seenMissing = new Set<string>();
   let queue = [{ body: skill.body, folder: skill.folder }];
   let used = 0;
@@ -198,46 +221,47 @@ export async function resolveSkillRefs(
 
     for (const node of queue) {
       for (const target of extractTargets(node.body)) {
-        const result = resolveTarget(target, node.folder, skillsFolder);
+        const result = resolveTarget(target, node.folder);
         if (result.kind === "ignore") continue;
         if (result.kind === "reject") {
           reportMissing(target);
           continue;
         }
 
-        const path = result.path;
+        let path = result.path;
         if (visited.has(path)) continue;
         visited.add(path);
 
-        let file = app.vault.getAbstractFileByPath(path);
+        let found = await store.isFile(path);
 
         // A bare prose mention ("see BRAND.md") carries no path, so it lands next to
         // SKILL.md even when the real file sits in references/. Search the skill folder
         // by basename before calling it missing.
-        if (!(file instanceof TFile) && !target.includes("/")) {
-          const found = findByBasename(app, skill.folder, path.split("/").pop() ?? "");
-          if (found) {
-            if (visited.has(found.path)) continue;
-            visited.add(found.path);
-            file = found;
+        if (!found && !target.includes("/")) {
+          const hit = await findByBasename(store, skill.folder, path.split("/").pop() ?? "");
+          if (hit) {
+            if (visited.has(hit)) continue;
+            visited.add(hit);
+            path = hit;
+            found = true;
           }
         }
 
-        if (!(file instanceof TFile)) {
+        if (!found) {
           reportMissing(target);
           continue;
         }
 
-        const body = (await app.vault.cachedRead(file)).trim();
-        const name = relativeName(file.path, skill.folder);
+        const body = (await store.read(path)).trim();
+        const name = relativeName(path, skill.folder);
         if (used + body.length > budgetChars) {
           skipped.push(name);
           continue; // skip whole files, never truncate mid-rule
         }
         used += body.length;
 
-        refs.push({ path: file.path, name, body });
-        next.push({ body, folder: file.parent?.path ?? node.folder });
+        refs.push({ path, name, body });
+        next.push({ body, folder: parentFolder(path) });
       }
     }
 
@@ -247,33 +271,46 @@ export async function resolveSkillRefs(
   return { refs, skipped, missing };
 }
 
-/** Depth-first search of a skill folder for a file with the given name (case-insensitive). */
-function findByBasename(app: App, skillFolder: string, basename: string): TFile | null {
+/**
+ * Breadth-first search of a skill folder for a file with the given name.
+ *
+ * @returns Store-relative path of the first case-insensitive match, or null.
+ */
+async function findByBasename(
+  store: SkillStore,
+  skillFolder: string,
+  basename: string
+): Promise<string | null> {
   if (!basename) return null;
-  const root = app.vault.getAbstractFileByPath(normalizePath(skillFolder));
-  if (!(root instanceof TFolder)) return null;
 
   const want = basename.toLowerCase();
-  const stack: TFolder[] = [root];
-  while (stack.length > 0) {
-    const folder = stack.pop() as TFolder;
-    for (const child of folder.children) {
-      if (child instanceof TFile && child.name.toLowerCase() === want) return child;
-      if (child instanceof TFolder) stack.push(child);
+  const queue: string[] = [skillFolder];
+  while (queue.length > 0) {
+    const dir = queue.shift() as string;
+    for (const child of await store.list(dir)) {
+      const path = joinRel(dir, child.name);
+      if (child.isDir) queue.push(path);
+      else if (child.name.toLowerCase() === want) return path;
     }
   }
   return null;
 }
 
+function parentFolder(path: string): string {
+  const i = path.lastIndexOf("/");
+  return i === -1 ? "" : path.slice(0, i);
+}
+
 function relativeName(path: string, folder: string): string {
-  const f = normalizePath(folder).replace(/\/+$/, "");
-  return path.startsWith(`${f}/`) ? path.slice(f.length + 1) : path;
+  return folder && path.startsWith(`${folder}/`) ? path.slice(folder.length + 1) : path;
 }
 
 /**
- * Unpacks a skills zip into the skills folder. Accepts either:
+ * Unpacks a skills zip into the vault's skills folder. Accepts either:
  *   skills.zip -> my-skill/SKILL.md            (skills at zip root)
  *   skills.zip -> skills/my-skill/SKILL.md     (one wrapping dir, auto-stripped)
+ *
+ * Writes through the vault directly — external skill folders are read-only.
  */
 export async function importSkillsZip(
   app: App,
