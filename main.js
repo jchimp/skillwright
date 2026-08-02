@@ -2950,25 +2950,53 @@ async function resolveSkillRefs(app, skill, skillsFolder, budgetChars) {
         if (visited.has(path))
           continue;
         visited.add(path);
-        const file = app.vault.getAbstractFileByPath(path);
+        let file = app.vault.getAbstractFileByPath(path);
+        if (!(file instanceof import_obsidian2.TFile) && !target.includes("/")) {
+          const found = findByBasename(app, skill.folder, path.split("/").pop() ?? "");
+          if (found) {
+            if (visited.has(found.path))
+              continue;
+            visited.add(found.path);
+            file = found;
+          }
+        }
         if (!(file instanceof import_obsidian2.TFile)) {
           reportMissing(target);
           continue;
         }
         const body = (await app.vault.cachedRead(file)).trim();
-        const name = relativeName(path, skill.folder);
+        const name = relativeName(file.path, skill.folder);
         if (used + body.length > budgetChars) {
           skipped.push(name);
           continue;
         }
         used += body.length;
-        refs.push({ path, name, body });
+        refs.push({ path: file.path, name, body });
         next.push({ body, folder: file.parent?.path ?? node.folder });
       }
     }
     queue = next;
   }
   return { refs, skipped, missing };
+}
+function findByBasename(app, skillFolder, basename) {
+  if (!basename)
+    return null;
+  const root = app.vault.getAbstractFileByPath((0, import_obsidian2.normalizePath)(skillFolder));
+  if (!(root instanceof import_obsidian2.TFolder))
+    return null;
+  const want = basename.toLowerCase();
+  const stack = [root];
+  while (stack.length > 0) {
+    const folder = stack.pop();
+    for (const child of folder.children) {
+      if (child instanceof import_obsidian2.TFile && child.name.toLowerCase() === want)
+        return child;
+      if (child instanceof import_obsidian2.TFolder)
+        stack.push(child);
+    }
+  }
+  return null;
 }
 function relativeName(path, folder) {
   const f = (0, import_obsidian2.normalizePath)(folder).replace(/\/+$/, "");
@@ -2982,7 +3010,9 @@ async function importSkillsZip(app, skillsFolder, data) {
     return 0;
   }
   const tops = new Set(entries.map((e) => e.name.split("/")[0]));
-  const strip = tops.size === 1 && entries.every((e) => e.name.includes("/")) ? `${[...tops][0]}/` : "";
+  const top = [...tops][0];
+  const topIsSkill = entries.some((e) => e.name.toLowerCase() === `${top.toLowerCase()}/skill.md`);
+  const strip = tops.size === 1 && !topIsSkill && entries.every((e) => e.name.includes("/")) ? `${top}/` : "";
   await ensureFolder(app, skillsFolder);
   let written = 0;
   for (const entry of entries) {
@@ -3023,6 +3053,11 @@ async function ensureFolder(app, path) {
 
 // src/modals.ts
 var import_obsidian3 = require("obsidian");
+var PROVIDER_LABELS = {
+  ollama: "Ollama",
+  openai: "OpenAI",
+  anthropic: "Anthropic"
+};
 var RewriteModal = class extends import_obsidian3.Modal {
   constructor(app, skills, defaults, onSubmit) {
     super(app);
@@ -3060,9 +3095,8 @@ var RewriteModal = class extends import_obsidian3.Modal {
       });
     });
     new import_obsidian3.Setting(contentEl).setName("Provider / model").addDropdown((dd) => {
-      dd.addOption("ollama", "Ollama");
-      dd.addOption("openai", "OpenAI");
-      dd.addOption("anthropic", "Anthropic");
+      for (const [id, label] of Object.entries(PROVIDER_LABELS))
+        dd.addOption(id, label);
       dd.setValue(this.provider);
       dd.onChange((v) => this.provider = v);
     }).addText((t) => {
@@ -3091,11 +3125,12 @@ var RewriteModal = class extends import_obsidian3.Modal {
   }
 };
 var ResultModal = class extends import_obsidian3.Modal {
-  constructor(app, title, original, result, onAction) {
+  constructor(app, title, original, result, meta, onAction) {
     super(app);
     this.title = title;
     this.original = original;
     this.result = result;
+    this.meta = meta;
     this.edited = result;
     this.onAction = onAction;
   }
@@ -3103,6 +3138,15 @@ var ResultModal = class extends import_obsidian3.Modal {
     const { contentEl } = this;
     contentEl.addClass("skillwright-modal", "skillwright-result");
     contentEl.createEl("h3", { text: this.title });
+    const meta = contentEl.createEl("div", { cls: "skillwright-meta" });
+    meta.createEl("span", {
+      text: `${PROVIDER_LABELS[this.meta.provider] ?? this.meta.provider} \xB7 ${this.meta.model}`,
+      cls: "skillwright-meta-item"
+    });
+    meta.createEl("span", {
+      text: this.meta.skill ? `Skill: ${this.meta.skill}` : "Skill: none (instruction only)",
+      cls: "skillwright-meta-item"
+    });
     contentEl.createEl("div", { text: "Original", cls: "skillwright-label" });
     contentEl.createEl("div", { text: this.original, cls: "skillwright-original" });
     contentEl.createEl("div", { text: "Result (editable)", cls: "skillwright-label" });
@@ -3344,7 +3388,11 @@ var SkillwrightPlugin = class extends import_obsidian5.Plugin {
           new import_obsidian5.Notice("Empty response from model.");
           return;
         }
-        this.showResult(editor, selection, result.trim(), choice);
+        this.showResult(editor, selection, result.trim(), choice, {
+          provider,
+          model: cfg.model,
+          skill: choice.skill?.name ?? null
+        });
       } catch (e) {
         notice.hide();
         new import_obsidian5.Notice(`Skillwright error: ${e.message}`, 8e3);
@@ -3386,9 +3434,9 @@ var SkillwrightPlugin = class extends import_obsidian5.Plugin {
     const task = instruction || (skill ? `Apply the "${skill.name}" skill to the passage.` : "Improve the passage.");
     return [`Task: ${task}`, "", "Passage:", "<<<", selection, ">>>"].join("\n");
   }
-  showResult(editor, original, result, choice) {
+  showResult(editor, original, result, choice, meta) {
     const title = choice.skill ? `Result \u2014 ${choice.skill.name}` : "Result";
-    new ResultModal(this.app, title, original, result, async (action, text) => {
+    new ResultModal(this.app, title, original, result, meta, async (action, text) => {
       switch (action) {
         case "replace":
           editor.replaceSelection(text);
